@@ -3,9 +3,9 @@
   "name": "mda-ci",
   "entries": [
     {
-      "_TODO": "Pin to a green aap-core commit whose aaphostsample bundles the current js-controller. Placeholder (all-zero) will fail acquire with a clear 'no successful run' error until set.",
+      "_note": "Green aap-core commit whose aaphostsample bundles the current js-controller.",
       "repo": "atsushieno/aap-core",
-      "commit": "0000000000000000000000000000000000000000",
+      "commit": "8fcf4fb8266212c5748c08c485ed0819184e0a8b",
       "artifacts": ["aap-core-apps-and-libs"],
       "files": { "samples/aaphostsample/build/outputs/apk/debug/aaphostsample-debug.apk": "aaphostsample.apk" }
     },
