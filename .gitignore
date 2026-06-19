@@ -1,0 +1,15 @@
+# No binaries in git (ARCHITECTURE.md principle 5). The working dir is persisted
+# via the GitHub Actions cache instead, never committed.
+.work/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Android / Gradle (for android-tests/)
+.gradle/
+build/
+local.properties
+
+# OS
+.DS_Store

@@ -1,0 +1,23 @@
+{
+  "name": "aap-integration-tests",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The cross-repository integration test builder + runner for the AAP ecosystem.",
+  "license": "MIT",
+  "bin": {
+    "aap-itest": "src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@octokit/rest": "^21.0.0",
+    "adm-zip": "^0.5.16",
+    "yargs": "^17.7.2"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "_comment": "CI catalog. Downloads BOTH the host app (aap-core aaphostsample, which embeds the JS controller) and the MDA plugin, all from GitHub Actions artifacts by commit. No building, no --host-apk needed. PREREQUISITES: (1) the aap-core entry must point to a green commit whose aaphostsample bundles the current js-controller (connect step + single-thread fix) — replace the placeholder below; (2) a PAT secret with artifact-read access to both repos (see .github/workflows/integration-tests.yml).",
+  "name": "mda-ci",
+  "entries": [
+    {
+      "_TODO": "Pin to a green aap-core commit whose aaphostsample bundles the current js-controller. Placeholder (all-zero) will fail acquire with a clear 'no successful run' error until set.",
+      "repo": "atsushieno/aap-core",
+      "commit": "0000000000000000000000000000000000000000",
+      "artifacts": ["aap-core-apps-and-libs"],
+      "files": { "samples/aaphostsample/build/outputs/apk/debug/aaphostsample-debug.apk": "aaphostsample.apk" }
+    },
+    {
+      "repo": "atsushieno/aap-lv2-mda",
+      "commit": "ca610edde25738196b0b7e2cfad6d924626841eb",
+      "artifacts": ["debug-apk"],
+      "files": { "apk/debug/app-debug.apk": "aap-lv2-mda.apk" }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "_comment": "Setup catalog: a flat list of download entries; each is { repo, commit, artifacts, files? }. files is an optional source->destination filename mapping; default extracts all.",
+  "name": "mda-baseline",
+  "entries": [
+    {
+      "repo": "atsushieno/aap-lv2-mda",
+      "commit": "ca610edde25738196b0b7e2cfad6d924626841eb",
+      "artifacts": ["debug-apk"],
+      "files": { "apk/debug/app-debug.apk": "aap-lv2-mda.apk" }
+    }
+  ]
+}

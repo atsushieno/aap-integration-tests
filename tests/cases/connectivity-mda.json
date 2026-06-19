@@ -1,0 +1,14 @@
+{
+  "name": "connectivity-mda",
+  "type": "connectivity",
+  "catalog": "mda-baseline",
+  "_hostPackage_note": "Generic host that embeds the JS controller and can instantiate any installed plugin service. The plugin's own compose-app would also work once rebuilt with the controller.",
+  "hostPackage": "org.androidaudioplugin.aaphostsample",
+  "plugins": [
+    "lv2:http://drobilla.net/plugins/mda/DX10",
+    "lv2:http://drobilla.net/plugins/mda/Overdrive"
+  ],
+  "frameCount": 1024,
+  "sampleRate": 48000,
+  "blocks": 10
+}

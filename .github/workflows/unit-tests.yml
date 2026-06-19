@@ -1,0 +1,19 @@
+name: unit-tests
+
+# Fast host-runner logic tests (catalog validation, WAV decode). No device, no
+# network, no secrets — runs on every push/PR for immediate signal.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  node-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npm test
