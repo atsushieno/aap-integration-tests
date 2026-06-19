@@ -28,17 +28,110 @@ export async function runConnectivity(serial, c) {
 
   const results = [];
   for (const plugin of c.plugins) {
-    const code = connectivityScript(plugin, frameCount, sampleRate, blocks);
-    const { resultCode, data } = await runJs(serial, c.hostPackage, code);
-    // A pass requires BOTH the transport to succeed AND the script to return our
-    // sentinel {ok:true}. The native facade reports failures as a returned string
-    // (e.g. "ERROR: ...") with transport result=0, so the transport code alone is
-    // not sufficient.
-    const ok = resultCode === 0 && parsedOk(data);
-    results.push({ plugin, ok, ...(ok ? { data } : { error: data }) });
-    console.log(`${ok ? 'PASS' : 'FAIL'} connectivity ${plugin}${ok ? '' : ` — ${data}`}`);
+    const r = await connectOnce(serial, c.hostPackage, connectivityScript(plugin, frameCount, sampleRate, blocks));
+    results.push({ plugin, ...r });
+    console.log(`${r.ok ? 'PASS' : 'FAIL'} connectivity ${plugin}${r.ok ? '' : ` — ${r.error}`}`);
   }
   return results;
+}
+
+/**
+ * Inspection smoke (path B): for each plugin, retrieve the parameter list, the preset list,
+ * read opaque state, and round-trip set-state. No golden comparison — a pass means every one
+ * of those AAP extension calls returned a well-formed result and set-state(get-state) was a no-op.
+ *
+ * @param {string|undefined} serial
+ * @param {{ hostPackage:string, plugins:string[], frameCount?:number, sampleRate?:number }} c
+ * @returns {Promise<object[]>} per-plugin {plugin, ok, ...inspection} or {plugin, ok:false, error}
+ */
+export async function runInspect(serial, c) {
+  const frameCount = c.frameCount ?? 1024;
+  const sampleRate = c.sampleRate ?? 48000;
+
+  await launchHost(serial, c.hostPackage);
+
+  const results = [];
+  for (const plugin of c.plugins) {
+    const r = await connectOnce(serial, c.hostPackage, inspectScript(plugin, frameCount, sampleRate));
+    if (r.ok) {
+      const v = unwrap(r.data);
+      results.push({ plugin, ...v });
+      const rt = v.state.length === 0 ? 'n/a' : v.state.roundTrip ? 'ok' : 'MISMATCH';
+      console.log(`PASS inspect ${plugin} — params:${v.parameterCount} presets:${v.presetCount} ` +
+        `state:${v.state.length}B roundTrip:${rt}`);
+    } else {
+      results.push({ plugin, ok: false, error: r.error });
+      console.log(`FAIL inspect ${plugin} — ${r.error}`);
+    }
+  }
+  return results;
+}
+
+/**
+ * JS evaluated on-device: create -> prepare -> activate, then exercise the four extension reads:
+ * parameter list, preset list, get-state, and set-state(get-state) round-trip. Disposes afterward.
+ */
+function inspectScript(pluginId, frameCount, sampleRate) {
+  const pid = JSON.stringify(pluginId);
+  return `(function(){
+    var inst = aap.instancing.create(${pid});
+    inst.prepare(${frameCount}, ${sampleRate}).activate();
+
+    var parameters = inst.getParameters();
+    var parameterCount = inst.getParameterCount();
+
+    var presetCount = inst.getPresetCount();
+    var presets = [];
+    for (var i = 0; i < presetCount; i++)
+      presets.push({ index: i, name: inst.getPresetName(i) });
+
+    var state = inst.getState();
+    var roundTrip = null;
+    if (state && state.length > 0) {
+      inst.setState(state);
+      roundTrip = (inst.getState() === state);
+    }
+
+    inst.deactivate();
+    inst.destroy();
+    return {
+      ok: true,
+      pluginId: ${pid},
+      parameterCount: parameterCount,
+      parameters: parameters,
+      presetCount: presetCount,
+      presets: presets,
+      state: { length: state ? state.length : 0, roundTrip: roundTrip }
+    };
+  })()`;
+}
+
+/** Parse a result payload that may be JSON or a JSON-encoded JSON string (transport double-encodes). */
+function unwrap(data) {
+  let v = JSON.parse(data);
+  if (typeof v === 'string') v = JSON.parse(v);
+  return v;
+}
+
+/**
+ * Run one connectivity script, with retries for the first-bind race: the initial create() triggers
+ * a plugin-service bind that can outlast `am broadcast`'s result window, yielding an empty result
+ * even though the bind completes in the background. A retry (the engine serializes, so it runs once
+ * the bind is done) then succeeds. A definitive `ERROR:` is NOT retried.
+ *
+ * Pass requires BOTH transport result=0 AND the script returning our {ok:true} sentinel; the native
+ * facade reports failures as a returned "ERROR: ..." string with transport result=0.
+ */
+async function connectOnce(serial, hostPackage, code, attempts = 4) {
+  let lastError = '';
+  for (let i = 1; i <= attempts; i++) {
+    const { resultCode, data } = await runJs(serial, hostPackage, code);
+    if (resultCode === 0 && parsedOk(data)) return { ok: true, data };
+    if (data && data.startsWith('ERROR')) return { ok: false, error: data }; // definitive
+    lastError = data || '(empty result / broadcast timed out — service still binding?)';
+    if (i < attempts) await delay(4000); // bind likely in progress; let it finish, then retry
+  }
+  return { ok: false, error: lastError };
 }
 
 /** JS evaluated on-device: create -> prepare -> activate -> process -> dispose. */

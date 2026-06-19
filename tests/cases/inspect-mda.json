@@ -1,0 +1,13 @@
+{
+  "name": "inspect-mda",
+  "type": "inspect",
+  "catalog": "mda-baseline",
+  "_note": "Exercises the AAP extension reads via the JS controller: parameter list, preset list, get-state, and set-state(get-state) round-trip — for each plugin.",
+  "hostPackage": "org.androidaudioplugin.aaphostsample",
+  "plugins": [
+    "lv2:http://drobilla.net/plugins/mda/DX10",
+    "lv2:http://drobilla.net/plugins/mda/Overdrive"
+  ],
+  "frameCount": 1024,
+  "sampleRate": 48000
+}
