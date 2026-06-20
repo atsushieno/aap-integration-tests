@@ -3,9 +3,9 @@
   "name": "uapmd-ci",
   "entries": [
     {
-      "_note": "uapmd commit whose android.yml run produced uapmd-android-apk. NOTE: this build predates the current aap-core; if AAP protocol drift breaks hosting the (newer) MDA plugin, re-dispatch uapmd android.yml against current aap-core and re-pin.",
+      "_note": "uapmd commit whose android.yml run produced uapmd-android-apk; includes the OboeAudioIODevice buffer-capacity fix (framesPerBurst clamp + chunked stabilized render).",
       "repo": "atsushieno/uapmd",
-      "commit": "a7c93c7da6946d4bdf6f6e51435e71b75d40b434",
+      "commit": "38950531e468fcf0a90ce41022ca98f4ced3e027",
       "artifacts": ["uapmd-android-apk"]
     },
     {

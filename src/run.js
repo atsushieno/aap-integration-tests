@@ -106,17 +106,21 @@ export async function runUapmdProject(serial, c) {
   }
   const v = unwrap(r.data);
   console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-project — ` +
-    `tracksAdded:${v.tracksAdded} saved:${v.saved} loaded:${v.loaded} tracksAfterLoad:${v.tracksAfterLoad}` +
+    `tracksAdded:${v.tracksAdded} saved:${v.saved} loaded:${v.loaded} ` +
+    `roundTrip:${v.roundTrip} (${v.tracksBeforeSave}->${v.tracksAfterLoad})` +
     (v.ok ? '' : ` (save:${v.saveError ?? '-'} load:${v.loadError ?? '-'})`));
   return [{ test: 'uapmd-project', ...v }];
 }
 
 /** JS evaluated in uapmd-app: new project -> add tracks + plugins -> save -> clear -> load -> verify. */
 function uapmdProjectScript(c) {
+  const hostPackage = c.hostPackage ?? 'dev.atsushieno.uapmd';
   const format = JSON.stringify(c.pluginFormat ?? 'AAP');
   const plugins = JSON.stringify(c.plugins ?? []);
+  // Use the app's private internal dir, which it owns and can create under. Scoped
+  // storage forbids the app raw-mkdir'ing its /storage/.../Android/data/<pkg> dir.
   const savePath = JSON.stringify(
-    c.savePath ?? '/storage/emulated/0/Android/data/dev.atsushieno.uapmd/files/itest-project.uapmd');
+    c.savePath ?? `/data/data/${hostPackage}/files/itest-project.uapmd`);
   return `(function(){
     try { uapmd.scanTool.performScanning(); } catch (e) {}   // make AAP plugins known to the catalog
     uapmd.sequencer.clearTracks();                            // start from an empty project
@@ -127,17 +131,24 @@ function uapmdProjectScript(c) {
       tracksAdded++;
       uapmd.instancing.create(${format}, plugins[i], i);     // add plugin onto the new track
     }
+    var count = function(t){ return Array.isArray(t) ? t.length : t; };
+    var tracksBeforeSave = count(uapmd.sequencer.getTrackInfos());
     var save = uapmd.project.save(${savePath});
     uapmd.sequencer.clearTracks();                            // wipe before reload
     var load = uapmd.project.load(${savePath});
-    var tracks = uapmd.sequencer.getTrackInfos();
-    var tracksAfterLoad = Array.isArray(tracks) ? tracks.length : tracks;
+    var tracksAfterLoad = count(uapmd.sequencer.getTrackInfos());
+    var saved = !!(save && save.success);
+    var loaded = !!(load && load.success);
     return {
-      ok: !!(save && save.success) && !!(load && load.success),
+      // Full round-trip: ops must succeed AND the reloaded project must restore the
+      // same track count that was saved (otherwise save/load lost content).
+      ok: saved && loaded && tracksAfterLoad === tracksBeforeSave,
       tracksAdded: tracksAdded,
-      saved: !!(save && save.success),
-      loaded: !!(load && load.success),
+      saved: saved,
+      loaded: loaded,
+      tracksBeforeSave: tracksBeforeSave,
       tracksAfterLoad: tracksAfterLoad,
+      roundTrip: tracksAfterLoad === tracksBeforeSave,
       saveError: save && save.error,
       loadError: load && load.error
     };
