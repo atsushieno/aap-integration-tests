@@ -71,3 +71,21 @@ Key options: `--token` (PAT; or `$GITHUB_TOKEN`), `--device auto|local|gmd|fireb
   2. **`catalogs/mda-ci.json`** — pin the `aap-core` entry to a green commit whose
      `aaphostsample` bundles the current js-controller (connect step + threading
      fix). Until then `acquire` fails with a clear "no successful run" error.
+
+## uapmd-based testing
+
+A second on-device **control surface**: uapmd-app exposes the same broadcast
+protocol with a `uapmd.*` facade (project save/load, tracks, instancing). The
+`uapmd-project` case type (`tests/cases/uapmd-project-mda.json`) creates a new
+project, adds a track + plugin per entry, saves, reloads, and verifies — driving
+the uapmd sequencer/project stack on top of AAP.
+
+```sh
+node src/cli.js --case uapmd-project-mda --device auto --skip-acquire   # uapmd-app already installed
+```
+
+Catalog `catalogs/uapmd-ci.json` downloads the uapmd-app APK + MDA plugin.
+**Prerequisite:** uapmd's `android.yml` is `workflow_dispatch`-only and builds
+against a chosen aap-core ref — dispatch it against an aap-core commit with the
+current js-controller, then pin the `uapmd` commit in `uapmd-ci.json` (placeholder
+until then).

@@ -10,8 +10,27 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 const run = promisify(execFile);
-const RECEIVER = 'org.androidaudioplugin.js.AapAutomationReceiver';
-const ACTION_RUN_JS = 'org.androidaudioplugin.js.RUN_JS';
+
+// Control surfaces: the two on-device automation entrypoints we drive over
+// `adb am broadcast`. Both share the protocol shape (RUN_JS + base64 code,
+// result via setResultData); they differ in action/receiver and readiness.
+const SURFACES = {
+  // aap-core's androidaudioplugin-js-controller (embedded in any AAP host app).
+  aap: {
+    action: 'org.androidaudioplugin.js.RUN_JS',
+    receiver: (pkg) => `${pkg}/org.androidaudioplugin.js.AapAutomationReceiver`,
+    readyProbe: 'aap.runtimeInfo()',
+    isReady: (rc, data) => rc === 0 && flag(data, 'attached'),
+  },
+  // uapmd-app's AutomationReceiver (fixed package; returns code 2 until its
+  // MainActivity is running).
+  uapmd: {
+    action: 'dev.atsushieno.uapmd.RUN_JS',
+    receiver: () => 'dev.atsushieno.uapmd/dev.atsushieno.uapmd.AutomationReceiver',
+    readyProbe: '(1)',
+    isReady: (rc) => rc === 0,
+  },
+};
 
 /**
  * @param {string|undefined} serial
@@ -24,11 +43,11 @@ export async function runConnectivity(serial, c) {
   const sampleRate = c.sampleRate ?? 48000;
   const blocks = c.blocks ?? 10;
 
-  await launchHost(serial, c.hostPackage);
+  await launchHost(serial, SURFACES.aap, c.hostPackage);
 
   const results = [];
   for (const plugin of c.plugins) {
-    const r = await connectOnce(serial, c.hostPackage, connectivityScript(plugin, frameCount, sampleRate, blocks));
+    const r = await connectOnce(serial, SURFACES.aap, c.hostPackage, connectivityScript(plugin, frameCount, sampleRate, blocks));
     results.push({ plugin, ...r });
     console.log(`${r.ok ? 'PASS' : 'FAIL'} connectivity ${plugin}${r.ok ? '' : ` — ${r.error}`}`);
   }
@@ -48,11 +67,11 @@ export async function runInspect(serial, c) {
   const frameCount = c.frameCount ?? 1024;
   const sampleRate = c.sampleRate ?? 48000;
 
-  await launchHost(serial, c.hostPackage);
+  await launchHost(serial, SURFACES.aap, c.hostPackage);
 
   const results = [];
   for (const plugin of c.plugins) {
-    const r = await connectOnce(serial, c.hostPackage, inspectScript(plugin, frameCount, sampleRate));
+    const r = await connectOnce(serial, SURFACES.aap, c.hostPackage, inspectScript(plugin, frameCount, sampleRate));
     if (r.ok) {
       const v = unwrap(r.data);
       results.push({ plugin, ...v });
@@ -65,6 +84,64 @@ export async function runInspect(serial, c) {
     }
   }
   return results;
+}
+
+/**
+ * uapmd-based test (drives uapmd-app's automation surface): create a new (empty) project,
+ * add a track per plugin and instantiate it, save the project, clear, reload, and verify the
+ * tracks came back. Exercises the uapmd sequencer/project stack on top of AAP.
+ *
+ * @param {string|undefined} serial
+ * @param {{ hostPackage?:string, plugins?:string[], pluginFormat?:string, savePath?:string }} c
+ */
+export async function runUapmdProject(serial, c) {
+  const surface = SURFACES.uapmd;
+  const hostPackage = c.hostPackage ?? 'dev.atsushieno.uapmd';
+  await launchHost(serial, surface, hostPackage);
+
+  const r = await connectOnce(serial, surface, hostPackage, uapmdProjectScript(c));
+  if (!r.ok) {
+    console.log(`FAIL uapmd-project — ${r.error}`);
+    return [{ test: 'uapmd-project', ok: false, error: r.error }];
+  }
+  const v = unwrap(r.data);
+  console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-project — ` +
+    `tracksAdded:${v.tracksAdded} saved:${v.saved} loaded:${v.loaded} tracksAfterLoad:${v.tracksAfterLoad}` +
+    (v.ok ? '' : ` (save:${v.saveError ?? '-'} load:${v.loadError ?? '-'})`));
+  return [{ test: 'uapmd-project', ...v }];
+}
+
+/** JS evaluated in uapmd-app: new project -> add tracks + plugins -> save -> clear -> load -> verify. */
+function uapmdProjectScript(c) {
+  const format = JSON.stringify(c.pluginFormat ?? 'AAP');
+  const plugins = JSON.stringify(c.plugins ?? []);
+  const savePath = JSON.stringify(
+    c.savePath ?? '/storage/emulated/0/Android/data/dev.atsushieno.uapmd/files/itest-project.uapmd');
+  return `(function(){
+    try { uapmd.scanTool.performScanning(); } catch (e) {}   // make AAP plugins known to the catalog
+    uapmd.sequencer.clearTracks();                            // start from an empty project
+    var plugins = ${plugins};
+    var tracksAdded = 0;
+    for (var i = 0; i < plugins.length; i++) {
+      uapmd.sequencer.addTrack();
+      tracksAdded++;
+      uapmd.instancing.create(${format}, plugins[i], i);     // add plugin onto the new track
+    }
+    var save = uapmd.project.save(${savePath});
+    uapmd.sequencer.clearTracks();                            // wipe before reload
+    var load = uapmd.project.load(${savePath});
+    var tracks = uapmd.sequencer.getTrackInfos();
+    var tracksAfterLoad = Array.isArray(tracks) ? tracks.length : tracks;
+    return {
+      ok: !!(save && save.success) && !!(load && load.success),
+      tracksAdded: tracksAdded,
+      saved: !!(save && save.success),
+      loaded: !!(load && load.success),
+      tracksAfterLoad: tracksAfterLoad,
+      saveError: save && save.error,
+      loadError: load && load.error
+    };
+  })()`;
 }
 
 /**
@@ -122,10 +199,10 @@ function unwrap(data) {
  * Pass requires BOTH transport result=0 AND the script returning our {ok:true} sentinel; the native
  * facade reports failures as a returned "ERROR: ..." string with transport result=0.
  */
-async function connectOnce(serial, hostPackage, code, attempts = 4) {
+async function connectOnce(serial, surface, hostPackage, code, attempts = 4) {
   let lastError = '';
   for (let i = 1; i <= attempts; i++) {
-    const { resultCode, data } = await runJs(serial, hostPackage, code);
+    const { resultCode, data } = await runJs(serial, surface, hostPackage, code);
     if (resultCode === 0 && parsedOk(data)) return { ok: true, data };
     if (data && data.startsWith('ERROR')) return { ok: false, error: data }; // definitive
     lastError = data || '(empty result / broadcast timed out — service still binding?)';
@@ -148,12 +225,12 @@ function connectivityScript(pluginId, frameCount, sampleRate, blocks) {
 }
 
 /** Send one RUN_JS broadcast and parse its result. Code is passed base64 to dodge shell escaping. */
-async function runJs(serial, hostPackage, code) {
+async function runJs(serial, surface, hostPackage, code) {
   const b64 = Buffer.from(code, 'utf8').toString('base64');
   const { stdout } = await adb(serial, [
     'shell', 'am', 'broadcast',
-    '-a', ACTION_RUN_JS,
-    '-n', `${hostPackage}/${RECEIVER}`,
+    '-a', surface.action,
+    '-n', surface.receiver(hostPackage),
     '--es', 'code_base64', b64,
   ]);
   return parseBroadcast(stdout);
@@ -168,22 +245,23 @@ function parseBroadcast(stdout) {
 }
 
 /**
- * Launch the host app so its activity wires the native client + serviceConnector
- * (PluginManagerScope), then wait until the runtime reports an attached client.
+ * Launch the host app's activity (which wires up the on-device runtime), then
+ * wait until the surface reports ready (aap: native client attached; uapmd: the
+ * receiver stops returning "not running").
  */
-async function launchHost(serial, hostPackage) {
+async function launchHost(serial, surface, hostPackage) {
   await startActivity(serial, hostPackage);
   const deadline = Date.now() + 60_000;
   let last = '';
   while (Date.now() < deadline) {
     try {
-      const { resultCode, data } = await runJs(serial, hostPackage, 'aap.runtimeInfo()');
+      const { resultCode, data } = await runJs(serial, surface, hostPackage, surface.readyProbe);
       last = data;
-      if (resultCode === 0 && attachedFlag(data)) return; // client wired -> ready
+      if (surface.isReady(resultCode, data)) return;
     } catch { /* app still starting */ }
     await delay(1500);
   }
-  throw new Error(`Host app ${hostPackage} did not attach a native client in time (last runtimeInfo: ${last}).`);
+  throw new Error(`Host app ${hostPackage} did not become ready in time (last probe: ${last}).`);
 }
 
 /** Start the host's launchable activity (resolve it explicitly; more reliable than monkey). */
@@ -206,12 +284,12 @@ async function startActivity(serial, hostPackage) {
   }
 }
 
-/** Parse aap.runtimeInfo() data and report whether a native client is attached. */
-function attachedFlag(data) {
+/** Parse a result payload (possibly double-encoded) and report a boolean member. */
+function flag(data, key) {
   try {
     let v = JSON.parse(data);
     if (typeof v === 'string') v = JSON.parse(v);
-    return !!(v && v.attached);
+    return !!(v && v[key]);
   } catch {
     return false;
   }

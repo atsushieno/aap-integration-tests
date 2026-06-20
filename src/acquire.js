@@ -10,7 +10,9 @@
 // Auth: a PAT in GITHUB_TOKEN (artifact-read scope).
 
 import { mkdir, readdir, cp, access, rm } from 'node:fs/promises';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, createWriteStream } from 'node:fs';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import { Octokit } from '@octokit/rest';
 import AdmZip from 'adm-zip';
@@ -94,12 +96,29 @@ async function downloadFromCommit(entry, destDir, token) {
   await mkdir(destDir, { recursive: true });
 
   for (const [name, artifact] of found) {
-    const { data } = await octokit.actions.downloadArtifact({
-      owner, repo, artifact_id: artifact.id, archive_format: 'zip',
-    });
-    const zip = new AdmZip(Buffer.from(data));
-    extract(zip, destDir, entry.files);
+    const tmpZip = path.join(destDir, `.${name}.zip`);
+    await downloadArtifactZip(octokit, owner, repo, artifact.id, tmpZip);
+    extract(new AdmZip(tmpZip), destDir, entry.files);
+    await rm(tmpZip, { force: true });
   }
+}
+
+/**
+ * Stream an artifact zip to disk. Buffering large artifacts (100s of MB; aAAR
+ * bundles, host APKs) in memory via octokit's ArrayBuffer is unreliable
+ * ("Invalid or unsupported zip format"), so resolve the signed redirect URL and
+ * stream it to a file instead.
+ */
+async function downloadArtifactZip(octokit, owner, repo, artifactId, destPath) {
+  const resp = await octokit.request(
+    'GET /repos/{owner}/{repo}/actions/artifacts/{artifact_id}/{archive_format}',
+    { owner, repo, artifact_id: artifactId, archive_format: 'zip', request: { redirect: 'manual' } }
+  );
+  const url = resp.headers?.location ?? resp.url;
+  if (!url) throw new Error(`Could not resolve download URL for artifact ${artifactId}.`);
+  const r = await fetch(url); // pre-signed blob URL; no auth header needed
+  if (!r.ok || !r.body) throw new Error(`Artifact download failed: HTTP ${r.status}`);
+  await pipeline(Readable.fromWeb(r.body), createWriteStream(destPath));
 }
 
 /** Extract a downloaded artifact zip, honoring an optional src->dest map. */

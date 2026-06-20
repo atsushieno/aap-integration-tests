@@ -1,0 +1,18 @@
+{
+  "_comment": "uapmd integration catalog. Downloads the uapmd-app APK (embeds the uapmd engine + AAP host + automation entrypoint) and the MDA plugin, both from GitHub Actions artifacts by commit. PREREQUISITES: (1) uapmd's android.yml is workflow_dispatch-only and builds against a chosen aap-core ref — dispatch it against an aap-core commit that has the current js-controller, then pin the uapmd commit below; (2) a PAT secret with artifact-read access to all source repos.",
+  "name": "uapmd-ci",
+  "entries": [
+    {
+      "_note": "uapmd commit whose android.yml run produced uapmd-android-apk. NOTE: this build predates the current aap-core; if AAP protocol drift breaks hosting the (newer) MDA plugin, re-dispatch uapmd android.yml against current aap-core and re-pin.",
+      "repo": "atsushieno/uapmd",
+      "commit": "a7c93c7da6946d4bdf6f6e51435e71b75d40b434",
+      "artifacts": ["uapmd-android-apk"]
+    },
+    {
+      "repo": "atsushieno/aap-lv2-mda",
+      "commit": "ca610edde25738196b0b7e2cfad6d924626841eb",
+      "artifacts": ["debug-apk"],
+      "files": { "apk/debug/app-debug.apk": "aap-lv2-mda.apk" }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "uapmd-project-mda",
+  "type": "uapmd-project",
+  "catalog": "uapmd-ci",
+  "_hostPackage_note": "uapmd-app drives its own embedded uapmd engine + AAP host; it hosts the installed MDA plugin services.",
+  "hostPackage": "dev.atsushieno.uapmd",
+  "pluginFormat": "AAP",
+  "plugins": [
+    "lv2:http://drobilla.net/plugins/mda/DX10",
+    "lv2:http://drobilla.net/plugins/mda/Overdrive"
+  ]
+}

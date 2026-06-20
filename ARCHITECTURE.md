@@ -342,7 +342,21 @@ deactivate
 | Tier | Topology | Renderer |
 |------|----------|----------|
 | Ours (default, trustworthy) | single instance, linear chain | our `process()` loop |
-| uapmd (opt-in, replaceable) | DAG fan-out/merge, timeline scheduling | uapmd, *only when trusted*; else ours |
+| uapmd (opt-in, replaceable) | DAG fan-out/merge, timeline scheduling, project/track model | uapmd, *only when trusted*; else ours |
+
+### uapmd as a second control surface
+
+uapmd-app exposes the **same broadcast protocol** as our js-controller, but with
+its own action/receiver (`dev.atsushieno.uapmd.RUN_JS` →
+`dev.atsushieno.uapmd/.AutomationReceiver`) and a richer `uapmd.*` facade
+(project save/load, `sequencer.addTrack/clearTracks`, `instancing.create(format,
+pluginId, trackIndex)`, timeline, render). The runner models these as two
+**surfaces** (`aap`, `uapmd`) over one broadcast transport; a uapmd test is a
+`uapmd.*` script. This exercises the **uapmd sequencer/project stack on top of
+AAP** — e.g. new project → add tracks + plugins → save → reload → verify — while
+the trustworthy aap-only path stays the measure of record for the framework
+itself. The uapmd-app APK is downloaded by commit like any other artifact
+(`uapmd-android-apk`), built by uapmd's `android.yml` against a chosen aap-core.
 
 ## 10. Verification and golden output
 

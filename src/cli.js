@@ -12,7 +12,7 @@ import { loadCatalog } from './catalog.js';
 import { acquire } from './acquire.js';
 import { installAll } from './install.js';
 import { acquireDevice } from './device/index.js';
-import { runConnectivity, runInspect } from './run.js';
+import { runConnectivity, runInspect, runUapmdProject } from './run.js';
 import { repoRoot } from './paths.js';
 
 async function main() {
@@ -104,6 +104,13 @@ async function runCase(serial, c) {
       const results = await runInspect(serial, c);
       const failed = results.filter((r) => !r.ok || r.state?.roundTrip === false);
       console.log(`inspect: ${results.length - failed.length}/${results.length} passed`);
+      if (failed.length) process.exitCode = 1;
+      break;
+    }
+    case 'uapmd-project': {
+      const results = await runUapmdProject(serial, c);
+      const failed = results.filter((r) => !r.ok);
+      console.log(`uapmd-project: ${results.length - failed.length}/${results.length} passed`);
       if (failed.length) process.exitCode = 1;
       break;
     }

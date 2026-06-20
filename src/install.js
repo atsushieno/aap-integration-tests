@@ -31,7 +31,23 @@ export async function installAll(deviceSerial, opts = {}) {
       continue;
     }
     console.log(`${opts.reinstall ? 'reinstall' : 'install'} ${pkg} <- ${path.basename(apk)}`);
+    await installOne(adb, pkg, apk);
+  }
+}
+
+/** Install one APK; on a signing-key mismatch (e.g. locally-built vs CI-downloaded), uninstall and retry. */
+async function installOne(adb, pkg, apk) {
+  try {
     await adb(['install', '-r', '-g', apk]);
+  } catch (e) {
+    const msg = String(e.stderr ?? e.message ?? e);
+    if (/INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match/i.test(msg)) {
+      console.log(`  signature mismatch for ${pkg}; uninstalling and reinstalling`);
+      try { await adb(['uninstall', pkg]); } catch { /* not installed / best-effort */ }
+      await adb(['install', '-g', apk]);
+    } else {
+      throw e;
+    }
   }
 }
 
