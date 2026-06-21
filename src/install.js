@@ -35,16 +35,20 @@ export async function installAll(deviceSerial, opts = {}) {
   }
 }
 
-/** Install one APK; on a signing-key mismatch (e.g. locally-built vs CI-downloaded), uninstall and retry. */
+/**
+ * Install one APK. `-t` allows test-only APKs (locally-built `assembleDebug` outputs are marked
+ * test-only). On a signing-key mismatch (e.g. a locally-built override vs the CI-downloaded
+ * package), uninstall and retry.
+ */
 async function installOne(adb, pkg, apk) {
   try {
-    await adb(['install', '-r', '-g', apk]);
+    await adb(['install', '-t', '-r', '-g', apk]);
   } catch (e) {
     const msg = String(e.stderr ?? e.message ?? e);
     if (/INSTALL_FAILED_UPDATE_INCOMPATIBLE|signatures do not match/i.test(msg)) {
       console.log(`  signature mismatch for ${pkg}; uninstalling and reinstalling`);
       try { await adb(['uninstall', pkg]); } catch { /* not installed / best-effort */ }
-      await adb(['install', '-g', apk]);
+      await adb(['install', '-t', '-g', apk]);
     } else {
       throw e;
     }

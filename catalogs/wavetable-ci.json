@@ -1,0 +1,18 @@
+{
+  "_comment": "Wavetable preset test catalog: a generic host (aap-core aaphostsample, which attaches a native client) + the wavetable plugin. The plugin runs in its own service process; the preset-select abort is in THAT service, so validating the fix needs the wavetable APK rebuilt against an aap-core with the AudioPluginService Looper.prepare() fix (drop it into .work/local/aap-juce-wavetable.apk). The host (aaphostsample) does not need the fix.",
+  "name": "wavetable-ci",
+  "entries": [
+    {
+      "repo": "atsushieno/aap-core",
+      "commit": "8fcf4fb8266212c5748c08c485ed0819184e0a8b",
+      "artifacts": ["aap-core-apps-and-libs"],
+      "files": { "samples/aaphostsample/build/outputs/apk/debug/aaphostsample-debug.apk": "aaphostsample.apk" }
+    },
+    {
+      "repo": "atsushieno/aap-juce-wavetable",
+      "commit": "87e35660959b4cae605e41ec429642400e4fdfea",
+      "artifacts": ["dist"],
+      "files": { "Wavetable-debug.apk": "aap-juce-wavetable.apk" }
+    }
+  ]
+}

@@ -12,7 +12,7 @@ import { loadCatalog } from './catalog.js';
 import { acquire } from './acquire.js';
 import { installAll } from './install.js';
 import { acquireDevice } from './device/index.js';
-import { runConnectivity, runInspect, runUapmdProject } from './run.js';
+import { runConnectivity, runInspect, runPreset, runUapmdProject, runUapmdLoadProject } from './run.js';
 import { repoRoot } from './paths.js';
 
 async function main() {
@@ -83,7 +83,8 @@ async function main() {
 const run = promisify(execFile);
 async function installApk(serial, apkPath) {
   const args = serial ? ['-s', serial] : [];
-  await run('adb', [...args, 'install', '-r', '-g', apkPath]);
+  // -t allows test-only APKs (locally-built assembleDebug outputs are test-only).
+  await run('adb', [...args, 'install', '-t', '-r', '-g', apkPath]);
 }
 
 async function loadCase(name) {
@@ -107,10 +108,24 @@ async function runCase(serial, c) {
       if (failed.length) process.exitCode = 1;
       break;
     }
+    case 'preset': {
+      const results = await runPreset(serial, c);
+      const failed = results.filter((r) => !r.ok);
+      console.log(`preset: ${results.length - failed.length}/${results.length} passed`);
+      if (failed.length) process.exitCode = 1;
+      break;
+    }
     case 'uapmd-project': {
       const results = await runUapmdProject(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`uapmd-project: ${results.length - failed.length}/${results.length} passed`);
+      if (failed.length) process.exitCode = 1;
+      break;
+    }
+    case 'uapmd-load-project': {
+      const results = await runUapmdLoadProject(serial, c);
+      const failed = results.filter((r) => !r.ok);
+      console.log(`uapmd-load-project: ${results.length - failed.length}/${results.length} passed`);
       if (failed.length) process.exitCode = 1;
       break;
     }

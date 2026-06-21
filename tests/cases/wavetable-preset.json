@@ -1,0 +1,14 @@
+{
+  "name": "wavetable-preset",
+  "type": "preset",
+  "catalog": "wavetable-ci",
+  "_hostPackage_note": "Generic host that attaches a native client and can instantiate any installed plugin service (the plugin app's own activity does not attach a client).",
+  "hostPackage": "org.androidaudioplugin.aaphostsample",
+  "plugins": [
+    "juceaap:socalabs-wavetable"
+  ],
+  "_pluginPackages_note": "Service package(s) to watch for an asynchronous native abort after preset selection (the crash happens off the host call, so logcat must be checked).",
+  "pluginPackages": [
+    "org.androidaudioplugin.ports.juce.wavetable"
+  ]
+}

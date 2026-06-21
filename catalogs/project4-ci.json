@@ -1,0 +1,29 @@
+{
+  "_comment": "Catalog for the project4 load test: uapmd-app plus the plugins referenced by tests/cases/project4.uapmdz (MDA, Dexed, Wavetable), all downloaded by commit from GitHub Actions artifacts. Needs a PAT with artifact-read access to all four repos.",
+  "name": "project4-ci",
+  "entries": [
+    {
+      "repo": "atsushieno/uapmd",
+      "commit": "38950531e468fcf0a90ce41022ca98f4ced3e027",
+      "artifacts": ["uapmd-android-apk"]
+    },
+    {
+      "repo": "atsushieno/aap-lv2-mda",
+      "commit": "ca610edde25738196b0b7e2cfad6d924626841eb",
+      "artifacts": ["debug-apk"],
+      "files": { "apk/debug/app-debug.apk": "aap-lv2-mda.apk" }
+    },
+    {
+      "repo": "atsushieno/aap-juce-dexed",
+      "commit": "80f13dda8c0a591d7752693bd9c168a09edf547d",
+      "artifacts": ["dist"],
+      "files": { "Dexed-debug.apk": "aap-juce-dexed.apk" }
+    },
+    {
+      "repo": "atsushieno/aap-juce-wavetable",
+      "commit": "87e35660959b4cae605e41ec429642400e4fdfea",
+      "artifacts": ["dist"],
+      "files": { "Wavetable-debug.apk": "aap-juce-wavetable.apk" }
+    }
+  ]
+}

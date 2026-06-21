@@ -1,0 +1,16 @@
+{
+  "name": "project4-load",
+  "type": "uapmd-load-project",
+  "catalog": "project4-ci",
+  "hostPackage": "dev.atsushieno.uapmd",
+  "projectFile": "tests/cases/project4.uapmdz",
+  "_expected_note": "Every plugin instance referenced by project4.uapmdz; the test fails if any is not instantiated on load.",
+  "expectedPlugins": [
+    "lv2:http://drobilla.net/plugins/mda/JX10",
+    "juceaap:44657864",
+    "juceaap:socalabs-wavetable",
+    "lv2:http://drobilla.net/plugins/mda/EPiano",
+    "lv2:http://drobilla.net/plugins/mda/DX10",
+    "lv2:http://drobilla.net/plugins/mda/Piano"
+  ]
+}

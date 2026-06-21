@@ -8,6 +8,8 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import path from 'node:path';
+import { repoRoot } from './paths.js';
 
 const run = promisify(execFile);
 
@@ -52,6 +54,104 @@ export async function runConnectivity(serial, c) {
     console.log(`${r.ok ? 'PASS' : 'FAIL'} connectivity ${plugin}${r.ok ? '' : ` — ${r.error}`}`);
   }
   return results;
+}
+
+/**
+ * Preset-selection test (path B): instantiate, then select a sample of preset indices and verify
+ * the plugin SERVICE does not crash. Regression for the wavetable preset-select abort (an AAPXS
+ * preset request made a JUCE plugin create an android.os.Handler on a thread without a Java Looper).
+ *
+ * IMPORTANT: that crash is ASYNCHRONOUS — setPreset returns OK to the host and the script finishes
+ * with {ok:true} *before* the plugin service aborts on its own thread. So a host-side result check
+ * alone gives a false pass. We must also confirm the plugin service process did not die: clear
+ * logcat, run, settle, then scan logcat for a native abort of the plugin's service package(s).
+ *
+ * @param {string|undefined} serial
+ * @param {{ hostPackage:string, plugins:string[], pluginPackages?:string[], presetIndices?:number[],
+ *           frameCount?:number, sampleRate?:number, settleMs?:number }} c
+ */
+export async function runPreset(serial, c) {
+  const frameCount = c.frameCount ?? 1024;
+  const sampleRate = c.sampleRate ?? 48000;
+  const settleMs = c.settleMs ?? 6000;
+  const watch = c.pluginPackages ?? [];
+
+  await launchHost(serial, SURFACES.aap, c.hostPackage);
+
+  const results = [];
+  for (const plugin of c.plugins) {
+    await adb(serial, ['logcat', '-c']).catch(() => {});
+    const r = await connectOnce(serial, SURFACES.aap, c.hostPackage,
+      presetScript(plugin, frameCount, sampleRate, c.presetIndices));
+    await delay(settleMs);                          // let any async service abort surface
+    const crash = await detectServiceCrash(serial, watch);
+
+    const ok = r.ok && !crash;
+    if (!ok) {
+      const err = crash ? `plugin service crashed: ${crash}` : r.error;
+      results.push({ plugin, ok: false, error: err });
+      console.log(`FAIL preset ${plugin} — ${err}`);
+      continue;
+    }
+    const v = unwrap(r.data);
+    results.push({ plugin, ...v });
+    console.log(`PASS preset ${plugin} — presetCount:${v.presetCount} ` +
+      `selected:[${v.selected.map((s) => s.index).join(',')}] stateChanged:${v.stateChanged}`);
+  }
+  return results;
+}
+
+/** Scan logcat for a native abort / process death of any watched plugin-service package. */
+async function detectServiceCrash(serial, packages) {
+  if (!packages.length) return null;
+  let stdout = '';
+  try { ({ stdout } = await adb(serial, ['logcat', '-d'])); } catch { return null; }
+  for (const line of stdout.split('\n')) {
+    if (!/Fatal signal|SIGABRT|SIGSEGV|Can't create handler|has died/i.test(line)) continue;
+    if (packages.some((p) => line.includes(p) || line.includes(shortProc(p))))
+      return line.trim().slice(0, 240);
+  }
+  return null;
+}
+
+/** logcat tags truncate the process name to ~15 chars; match that suffix too. */
+function shortProc(pkg) {
+  return pkg.length > 15 ? pkg.slice(pkg.length - 15) : pkg;
+}
+
+/**
+ * JS evaluated on-device: create -> prepare -> activate, then setPreset across a sample of indices
+ * (default: first, second, middle, last) and report. Reading state before/after gives an
+ * informational "did selection change anything" signal; the hard assertion is "no crash".
+ */
+function presetScript(pluginId, frameCount, sampleRate, presetIndices) {
+  const pid = JSON.stringify(pluginId);
+  const explicit = Array.isArray(presetIndices) ? JSON.stringify(presetIndices) : 'null';
+  return `(function(){
+    var inst = aap.instancing.create(${pid});
+    inst.prepare(${frameCount}, ${sampleRate}).activate();
+    var pc = inst.getPresetCount();
+    var idx = ${explicit};
+    if (!idx) { // default sample across the range
+      idx = [0, 1, Math.floor(pc / 2), pc - 1];
+    }
+    var seen = {}, chosen = [];
+    for (var k = 0; k < idx.length; k++) {
+      var i = idx[k];
+      if (i >= 0 && i < pc && !seen[i]) { seen[i] = 1; chosen.push(i); }
+    }
+    var stateBefore = inst.getState();
+    var selected = [];
+    for (var k = 0; k < chosen.length; k++) {
+      inst.setPreset(chosen[k]);                       // the operation that crashed
+      selected.push({ index: chosen[k], name: inst.getPresetName(chosen[k]) });
+    }
+    var stateAfter = inst.getState();
+    inst.deactivate();
+    inst.destroy();
+    return { ok: true, pluginId: ${pid}, presetCount: pc, selected: selected,
+             stateChanged: stateBefore !== stateAfter };
+  })()`;
 }
 
 /**
@@ -110,6 +210,83 @@ export async function runUapmdProject(serial, c) {
     `roundTrip:${v.roundTrip} (${v.tracksBeforeSave}->${v.tracksAfterLoad})` +
     (v.ok ? '' : ` (save:${v.saveError ?? '-'} load:${v.loadError ?? '-'})`));
   return [{ test: 'uapmd-project', ...v }];
+}
+
+/**
+ * uapmd load-project test: push a .uapmd/.uapmdz project to the device, load it in uapmd-app,
+ * and verify every plugin the project references actually instantiated. A loaded plugin node has a
+ * non-empty pluginId in getTrackInfos(); a failed one has "".
+ *
+ * @param {string|undefined} serial
+ * @param {{ hostPackage?:string, projectFile:string, expectedPlugins?:string[] }} c
+ */
+export async function runUapmdLoadProject(serial, c) {
+  const surface = SURFACES.uapmd;
+  const hostPackage = c.hostPackage ?? 'dev.atsushieno.uapmd';
+  const expected = c.expectedPlugins ?? [];
+  await launchHost(serial, surface, hostPackage);
+
+  const devicePath = await pushProjectToApp(serial, hostPackage, c.projectFile);
+  // Loading many plugins (incl. heavy JUCE ones) is slow; allow extra retry attempts.
+  const r = await connectOnce(serial, surface, hostPackage, uapmdLoadProjectScript(devicePath, expected), 6);
+  if (!r.ok) {
+    console.log(`FAIL uapmd-load-project — ${r.error}`);
+    return [{ test: 'uapmd-load-project', ok: false, error: r.error }];
+  }
+  const v = unwrap(r.data);
+  console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-load-project — loaded ${v.loadedCount}/${expected.length}` +
+    (v.ok ? '' : ` — missing:[${v.missing}] failed:[${v.failed}] loadErr:${v.loadError ?? '-'}`));
+  return [{ test: 'uapmd-load-project', ...v }];
+}
+
+/** Push a local project file into the app's private dir (run-as; debuggable app), readable by the app. */
+async function pushProjectToApp(serial, hostPackage, projectFile) {
+  const localPath = path.isAbsolute(projectFile) ? projectFile : path.join(repoRoot, projectFile);
+  const name = path.basename(localPath);
+  const tmp = `/data/local/tmp/${name}`;
+  await adb(serial, ['push', localPath, tmp]);
+  // /data/local/tmp isn't traversable by the app; copy into its sandbox via run-as.
+  // Pass the whole command as ONE shell string so the nested `sh -c` script (with &&)
+  // survives adb's argument flattening.
+  await adb(serial, ['shell', `run-as ${hostPackage} sh -c 'mkdir -p files && cp ${tmp} files/${name}'`]);
+  return `/data/data/${hostPackage}/files/${name}`;
+}
+
+/** Load the project, then collect which plugin nodes instantiated vs failed, and which expected are missing. */
+function uapmdLoadProjectScript(devicePath, expectedPlugins) {
+  return `(function(){
+    // Disable the live audio engine during the heavy load so the realtime render
+    // thread does not compete for CPU (a busy engine can make a many-plugin load
+    // slow enough to hit the app-thread timeout, or OOM/destabilize the device).
+    try { uapmd.audio.setEngineEnabled(false); } catch (e) {}
+    try { uapmd.scanTool.performScanning(); } catch (e) {}
+    uapmd.sequencer.clearTracks();
+    var load = uapmd.project.load(${JSON.stringify(devicePath)});
+    try { uapmd.audio.setEngineEnabled(true); } catch (e) {}
+    var tracks = uapmd.sequencer.getTrackInfos() || [];
+    var loaded = [], failed = [];
+    for (var i = 0; i < tracks.length; i++) {
+      var nodes = tracks[i].nodes || [];
+      for (var j = 0; j < nodes.length; j++) {
+        var nd = nodes[j];
+        if (!nd.isPlugin) continue;
+        if (nd.pluginId && nd.pluginId.length > 0) loaded.push(nd.pluginId);
+        else failed.push(nd.displayName || ('track' + i + '/node' + j));
+      }
+    }
+    var expected = ${JSON.stringify(expectedPlugins)};
+    var missing = expected.filter(function(p){ return loaded.indexOf(p) < 0; });
+    return {
+      ok: !!(load && load.success) && failed.length === 0 && missing.length === 0,
+      loadedOk: !!(load && load.success),
+      loadError: load && load.error,
+      loadedCount: loaded.length,
+      loaded: loaded,
+      failedCount: failed.length,
+      failed: failed,
+      missing: missing
+    };
+  })()`;
 }
 
 /** JS evaluated in uapmd-app: new project -> add tracks + plugins -> save -> clear -> load -> verify. */
