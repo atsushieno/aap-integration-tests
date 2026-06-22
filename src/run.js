@@ -295,15 +295,67 @@ export async function runUapmdLoadProject(serial, c) {
   const r = await runJsJob(serial, surface, hostPackage, uapmdLoadProjectScript(devicePath, expected),
     { timeoutMs: 180_000 });
   if (!r.ok) {
+    let recoveryError = '';
+    if (/timed out waiting for app thread/i.test(r.error ?? '')) {
+      const recovered = await verifyUapmdLoadAfterAppThreadTimeout(serial, surface, hostPackage, expected);
+      if (recovered.ok) return recovered.results;
+      recoveryError = `; recovery verification failed: ${recovered.error}`;
+    }
     const details = await automationTargetDetails(serial, hostPackage);
-    const error = `${r.error}${details ? ` (${details})` : ''}`;
+    const includeDetails = details && !/\(pid=/.test(r.error ?? '');
+    const error = `${r.error}${recoveryError}${includeDetails ? ` (${details})` : ''}`;
     console.log(`FAIL uapmd-load-project — ${error}`);
     return [{ test: 'uapmd-load-project', ok: false, error, expectedCount: expected.length }];
   }
   const v = unwrap(r.data);
+  if (!v.ok) {
+    const settled = await verifyUapmdLoadAfterIncompleteResult(serial, surface, hostPackage, expected, v);
+    if (settled.ok) return settled.results;
+    console.log(`FAIL uapmd-load-project — loaded ${settled.value.loadedCount}/${expected.length} after settle` +
+      formatProjectLoadFailure(settled.value) + formatInitialProjectLoadFailure(v));
+    return [{ test: 'uapmd-load-project', expectedCount: expected.length, ...settled.value, initial: v }];
+  }
   console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-load-project — loaded ${v.loadedCount}/${expected.length}` +
     (v.ok ? '' : formatProjectLoadFailure(v)));
   return [{ test: 'uapmd-load-project', expectedCount: expected.length, ...v }];
+}
+
+async function verifyUapmdLoadAfterIncompleteResult(serial, surface, hostPackage, expected, initial) {
+  await delay(5000);
+  const r = await runJsJob(serial, surface, hostPackage, uapmdVerifyLoadedProjectScript(expected),
+    { timeoutMs: 60_000, pollMs: 1000 });
+  if (!r.ok)
+    return { ok: false, value: { ok: false, loadedCount: initial.loadedCount, missing: initial.missing, failed: initial.failed, unexpected: initial.unexpected, loadError: r.error } };
+
+  const v = unwrap(r.data);
+  if (v.ok) {
+    console.log(`PASS uapmd-load-project — loaded ${v.loadedCount}/${expected.length} after settle` +
+      formatInitialProjectLoadFailure(initial));
+    return {
+      ok: true,
+      results: [{
+        test: 'uapmd-load-project',
+        expectedCount: expected.length,
+        settledAfterMs: 5000,
+        initial,
+        ...v
+      }]
+    };
+  }
+  return { ok: false, value: v };
+}
+
+async function verifyUapmdLoadAfterAppThreadTimeout(serial, surface, hostPackage, expected) {
+  console.warn('uapmd-load-project: project load hit the 90s app-thread automation timeout; ' +
+    'waiting for uapmd to become responsive and verifying loaded plugin state.');
+  const r = await runJsJob(serial, surface, hostPackage, uapmdVerifyLoadedProjectScript(expected),
+    { timeoutMs: 240_000, pollMs: 3000 });
+  if (!r.ok) return { ok: false, error: r.error };
+
+  const v = unwrap(r.data);
+  console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-load-project — loaded ${v.loadedCount}/${expected.length} after app-thread timeout` +
+    (v.ok ? '' : formatProjectLoadFailure(v)));
+  return { ok: true, results: [{ test: 'uapmd-load-project', expectedCount: expected.length, ...v }] };
 }
 
 function formatProjectLoadFailure(v) {
@@ -311,6 +363,11 @@ function formatProjectLoadFailure(v) {
   const failed = formatPluginRefs(v.failed);
   const unexpected = formatPluginRefs(v.unexpected);
   return ` — missing:[${missing}] failed:[${failed}] unexpected:[${unexpected}] loadErr:${v.loadError ?? '-'}`;
+}
+
+function formatInitialProjectLoadFailure(v) {
+  if (!v || v.ok) return '';
+  return ` (initial loaded ${v.loadedCount}/${v.expectedCount ?? '?'} missing:[${formatPluginRefs(v.missing)}] failed:[${formatPluginRefs(v.failed)}] unexpected:[${formatPluginRefs(v.unexpected)}])`;
 }
 
 function formatPluginRefs(refs) {
@@ -393,6 +450,54 @@ function uapmdLoadProjectScript(devicePath, expectedPlugins) {
       ok: !!(load && load.success) && failed.length === 0 && missing.length === 0 && remaining.length === 0,
       loadedOk: !!(load && load.success),
       loadError: load && load.error,
+      loadedCount: loaded.length,
+      loaded: loaded,
+      failedCount: failed.length,
+      failed: failed,
+      expectedCount: expected.length,
+      expected: expected,
+      missing: missing,
+      unexpected: remaining
+    };
+  })()`;
+}
+
+function uapmdVerifyLoadedProjectScript(expectedPlugins) {
+  return `(function(){
+    var tracks = uapmd.sequencer.getTrackInfos() || [];
+    var loaded = [], failed = [];
+    for (var i = 0; i < tracks.length; i++) {
+      var nodes = tracks[i].nodes || [];
+      for (var j = 0; j < nodes.length; j++) {
+        var nd = nodes[j];
+        if (!nd.isPlugin) continue;
+        var ref = {
+          trackIndex: i,
+          nodeIndex: j,
+          pluginIndex: j,
+          pluginId: nd.pluginId || '',
+          displayName: nd.displayName || ''
+        };
+        if (ref.pluginId.length > 0) loaded.push(ref);
+        else failed.push(ref);
+      }
+    }
+    var expected = ${JSON.stringify(expectedPlugins)};
+    var remaining = loaded.slice();
+    var missing = [];
+    for (var k = 0; k < expected.length; k++) {
+      var e = expected[k];
+      var found = -1;
+      for (var n = 0; n < remaining.length; n++) {
+        if (remaining[n].pluginId === e.pluginId) { found = n; break; }
+      }
+      if (found >= 0) remaining.splice(found, 1);
+      else missing.push(e);
+    }
+    return {
+      ok: failed.length === 0 && missing.length === 0 && remaining.length === 0,
+      loadedOk: true,
+      loadError: null,
       loadedCount: loaded.length,
       loaded: loaded,
       failedCount: failed.length,
@@ -727,6 +832,15 @@ async function runJsJob(serial, surface, hostPackage, code, opts = {}) {
       }
       if (poll.resultCode !== 0) {
         last = `poll result=${poll.resultCode}, data=${poll.data || '(empty)'}`;
+        if (automationNativeBridgeMissing(poll.data)) {
+          const details = await automationTargetDetails(serial, hostPackage);
+          return {
+            ok: false,
+            error: `host native automation bridge is unavailable while polling ${jobId}; ` +
+              `the app likely crashed or restarted during JS automation. ` +
+              `Last receiver response: ${last}${details ? ` (${details})` : ''}`,
+          };
+        }
         continue;
       }
       const job = parseJobResult(poll.data);
@@ -767,11 +881,15 @@ function parseJobResult(data) {
   }
 }
 
+function automationNativeBridgeMissing(data) {
+  return /UnsatisfiedLinkError: No implementation found for .*MainActivity\.native/i.test(data ?? '');
+}
+
 /** Parse `Broadcast completed: result=<code>, data="<data>"`. */
 function parseBroadcast(stdout) {
   const m = /result=(-?\d+)(?:, data="([\s\S]*?)")?\s*$/m.exec(stdout);
   if (!m) throw new Error(`Unparseable broadcast output:\n${stdout}`);
-  const data = m[2] != null ? m[2].replace(/\\"/g, '"') : '';
+  const data = m[2] != null ? m[2] : '';
   return { resultCode: Number(m[1]), data };
 }
 
@@ -781,7 +899,9 @@ function parseBroadcast(stdout) {
  * receiver stops returning "not running").
  */
 async function launchHost(serial, surface, hostPackage) {
+  await suppressImmersiveModeConfirmation(serial);
   await startActivity(serial, hostPackage);
+  await dismissImmersiveModeConfirmation(serial);
   let lastStart = Date.now();
   const deadline = Date.now() + (surface.launchTimeoutMs ?? 60_000);
   let last = '';
@@ -792,6 +912,12 @@ async function launchHost(serial, surface, hostPackage) {
       const { resultCode, data } = await runJs(serial, surface, hostPackage, surface.readyProbe);
       last = data;
       if (surface.isReady(resultCode, data)) {
+        if (await hasImmersiveModeConfirmation(serial)) {
+          readyCount = 0;
+          await dismissImmersiveModeConfirmation(serial);
+          await delay(1000);
+          continue;
+        }
         readyCount++;
         if (readyCount >= needed) return;
         await delay(surface.stableReadyDelayMs ?? 500);
@@ -801,6 +927,7 @@ async function launchHost(serial, surface, hostPackage) {
     } catch { /* app still starting */ }
     if (Date.now() - lastStart > 15_000) {
       await startActivity(serial, hostPackage).catch(() => {});
+      await dismissImmersiveModeConfirmation(serial);
       lastStart = Date.now();
     }
     await delay(1500);
@@ -808,6 +935,31 @@ async function launchHost(serial, surface, hostPackage) {
   const details = await automationTargetDetails(serial, hostPackage);
   throw new Error(`Host app ${hostPackage} did not become ready in time ` +
     `(last probe: ${last || '(empty)'}${details ? `; ${details}` : ''}).`);
+}
+
+async function suppressImmersiveModeConfirmation(serial) {
+  await adb(serial, ['shell', 'settings', 'put', 'secure', 'immersive_mode_confirmations', 'confirmed'])
+    .catch(() => {});
+}
+
+async function dismissImmersiveModeConfirmation(serial) {
+  for (let i = 0; i < 4; i++) {
+    if (!(await hasImmersiveModeConfirmation(serial))) return;
+    await adb(serial, ['shell', 'input', 'keyevent', 'KEYCODE_ENTER']).catch(() => {});
+    await delay(500);
+  }
+}
+
+async function hasImmersiveModeConfirmation(serial) {
+  try {
+    const { stdout } = await adb(serial, [
+      'shell',
+      "dumpsys activity activities | grep -E 'mFocusedWindow|mCurrentFocus' | head -5",
+    ]);
+    return /ImmersiveModeConfirmation/i.test(stdout);
+  } catch {
+    return false;
+  }
 }
 
 /** Start the host's launchable activity (resolve it explicitly; more reliable than monkey). */

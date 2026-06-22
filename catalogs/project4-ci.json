@@ -4,7 +4,7 @@
   "entries": [
     {
       "repo": "atsushieno/uapmd",
-      "commit": "38950531e468fcf0a90ce41022ca98f4ced3e027",
+      "commit": "cae16a5a28b0124d9e6b5daa3df3a2a5d00a0525",
       "artifacts": ["uapmd-android-apk"]
     },
     {
