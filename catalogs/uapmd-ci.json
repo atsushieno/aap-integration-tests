@@ -5,7 +5,7 @@
     {
       "_note": "uapmd commit whose android.yml run produced uapmd-android-apk; includes the OboeAudioIODevice buffer-capacity fix (framesPerBurst clamp + chunked stabilized render).",
       "repo": "atsushieno/uapmd",
-      "commit": "38950531e468fcf0a90ce41022ca98f4ced3e027",
+      "commit": "070d15e49dc3b6a344ffd85b31b50c6910b5ab52",
       "artifacts": ["uapmd-android-apk"]
     },
     {
