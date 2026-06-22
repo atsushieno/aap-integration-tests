@@ -470,24 +470,30 @@ uploaded run artifact) even if the cache entry is evicted.
   (§5/§7) — *not* built from source, no submodules, no `publishToMavenLocal`.
   Only our own test-hosting code is built (§6).
 - **Device on GitHub Actions: as built, `integration-tests.yml` uses
-  `reactivecircus/android-emulator-runner`** (API 30, `google_apis`, x86_64, KVM
+  `reactivecircus/android-emulator-runner`** (API 35, `google_apis`, x86_64, KVM
   enabled) and drives the runner with `--device auto`, which reuses that
-  emulator. This differs from the original "our own GMD at build time" plan; our
-  `gmd` provider is the *local* fallback and is **unvalidated on hosted runners**.
-  **This CI path has never been confirmed green** — see the stability caveat.
+  emulator. API 35 is deliberate: uapmd's Android app has minSdk 31, so the
+  previous API 30 setup could not install the app. This differs from the original
+  "our own GMD at build time" plan; our `gmd` provider is the *local* fallback
+  and is **unvalidated on hosted runners**. **This CI path has never been
+  confirmed green** — see the stability caveat.
 - **The default suite is wired into CI.** `integration-tests.yml` runs
   `npm test -- --device auto`, so CI attempts the same case matrix as a local
   one-command run. This is intentionally factual, not aspirational: if uapmd
   cases still fail or plugins are dropped, the workflow should report that
   failure rather than hiding it behind a connectivity-only subset.
-- **Working dir persisted via Actions cache** (downloads, `repo@commit` cache,
-  goldens) — keyed so it is reproducible/traceable (§5 principle 5, §7).
+- **APK artifact cache persisted via Actions cache** (`.work/cache`) — keyed by
+  catalog files with broad restore keys so the workflow can survive GitHub
+  artifact expiry when a previous run has already cached the APKs. Downloaded
+  staging (`.work/downloaded`) is intentionally rebuilt each run from cache/local
+  inputs.
 - **PAT** with artifact-read scope is required for downloads (§7), supplied as the
   `AAP_ARTIFACTS_PAT` secret / `GITHUB_TOKEN` / `--token`. A missing or
   insufficiently-scoped PAT silently fails acquisition.
-- **Result tracking (planned):** JUnit XML + uploaded artifacts (logcat; rendered
-  WAVs once the renderer exists). Not yet emitted — the runner currently prints
-  human-readable PASS/FAIL and sets a non-zero exit on failure.
+- **Result tracking:** the runner currently prints human-readable PASS/FAIL and
+  sets a non-zero exit on failure. The workflow captures `logcat` and `dumpsys
+  meminfo` as `integration-diagnostics` on every run. JUnit XML and rendered WAV
+  artifacts remain planned.
 
 ## 12. Open questions (consolidated)
 

@@ -74,7 +74,8 @@ npm test -- --case connectivity-mda --catalog mda-ci --device auto
 - **`integration-tests`** — downloads host + plugin APKs by commit from GitHub
   Actions artifacts, boots an emulator (`reactivecircus/android-emulator-runner`),
   installs, and runs the default integration suite (`npm test -- --device auto`).
-  Manual + nightly + on `main`.
+  It uses API 35 because uapmd's Android app requires API 31+. Manual + nightly
+  + on `main`.
 
   **Prerequisites before it goes green:**
   1. Secret **`AAP_ARTIFACTS_PAT`** — a PAT with artifact-read access to every
@@ -82,6 +83,8 @@ npm test -- --case connectivity-mda --catalog mda-ci --device auto
      other repos' artifacts).
   2. Catalog pins whose GitHub Actions artifacts still exist, or cached copies in
      `.work/cache`. Otherwise `acquire` fails with a clear artifact error.
+  3. Enough emulator capacity for uapmd and the larger plugin set; the workflow
+     captures logcat and meminfo as `integration-diagnostics` on every run.
 
 ## uapmd-based testing
 
