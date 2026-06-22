@@ -1,9 +1,64 @@
-# aap-integration-tests — Architecture (DRAFT)
+# aap-integration-tests — Architecture
 
-> **Status: DRAFT for review.** Nothing here is implemented yet. Sections marked
-> **[OPEN]** are proposals awaiting decision; **[ASSUMPTION]** marks a default I
-> picked that should be confirmed or overridden. No code or scaffolding will be
-> added to this repository until this document is approved.
+> **Status: early and unstable. Nothing here has reliably worked end-to-end.**
+> The code below exists and individual cases have been made to pass *once*, on a
+> single connected device, but only after chasing a chain of real bugs in
+> aap-core, aap-juce, and uapmd. Treat every "implemented" mark as "the code path
+> exists," **not** "it works dependably." This document describes the design and
+> flags both what is built and how fragile it currently is. The original draft
+> predated the code; it has been reconciled with what was actually built — and with
+> how poorly it holds together so far.
+
+## Stability caveat (read this first)
+
+This suite has **not** demonstrated a stable, repeatable green run. Concretely:
+
+- **Every passing case so far required fixing framework/plugin bugs first**, not
+  just running the harness. Examples surfaced *by* this suite: a JUCE
+  message-thread / `Looper.prepare()` crash on preset/state/parameter access (an
+  aap-juce JUCE patch that silently wasn't applied); uninitialized
+  `aap_preset_t` buffers producing garbage preset names in aap-core; a uapmd
+  main-thread deadlock on plugin instantiation and project save/load. All of
+  these fixes are committed but **those AI fixes are not reliable enough and need further polish**.
+- **The uapmd cases (`uapmd-project`, `uapmd-load-project`) have never passed.**
+  A deadlock was diagnosed and a fix written in uapmd source, but it has not yet
+  been rebuilt/re-tested.
+- **CI has never been validated.** The workflow exists but has only ever been
+  exercised ad hoc against a *connected* device. The hosted-emulator path
+  (KVM + `reactivecircus/android-emulator-runner`, or our own GMD) is unproven,
+  and it depends on prerequisites that can silently break a run (a cross-repo PAT
+  secret; catalog commit pins whose CI artifacts expire after ~90 days).
+- **No audio is actually verified.** The offline renderer and golden-WAV
+  comparison were never built; `verify.js` is unused scaffolding. Current cases
+  assert only operation outcomes (instancing succeeds, params/presets/state read
+  back, track counts round-trip).
+- Results are **device/plugin/timing sensitive** and have shown ordering and
+  async-timing fragility (e.g. `clearTracks` leaving stale state; async
+  instantiation completing after the assertion reads).
+
+In short: this is a scaffold that has *caught* real bugs, which is its current
+value — not a dependable regression gate yet.
+
+## Implementation status (at a glance)
+
+"Code path exists" ≠ "works reliably." See the stability caveat above.
+
+| Area | Code path | Reliability |
+|------|-----------|-------------|
+| Host runner (`src/cli.js`, `src/run.js`) — catalog → acquire → device → install → run | exists | works on a connected device |
+| Catalog + download-by-commit + `.work/` cache (`acquire.js`, `catalog.js`, `paths.js`) | exists | works; fragile to artifact expiry/PAT |
+| Install (`install.js`): skip-if-installed, `--reinstall`, `-t -g`, signature-mismatch reinstall | exists | works |
+| Device providers (`src/device/`): `auto`, `local`, `gmd`, `firebase` | exists | `local`/`auto` used; `gmd` unproven on CI; `firebase` a stub |
+| On-device path **(B)** JS controller over `adb am broadcast` — all current cases use this | exists | works for aap cases; uapmd surface deadlocks (fix pending) |
+| Case types: `connectivity`, `inspect`, `preset` | exist | pass *now*, after framework fixes |
+| Case types: `uapmd-project`, `uapmd-load-project` | exist | **never passed** (uapmd deadlock; fix unverified) |
+| CI: `integration-tests.yml` (emulator + `connectivity-mda`), `unit-tests.yml` | exist | **never validated on a hosted runner** |
+| On-device path **(A)** instrumented tests | — | planned, not built |
+| Offline renderer (`aap.render.*`) + golden WAV verification (`verify.js`) | scaffold only | **no case uses it** |
+
+The remaining design narrative below stays close to the original intent. Where the
+build diverged or a piece is not yet implemented (or not yet trustworthy), it is
+called out inline.
 
 ## 1. Purpose
 
@@ -64,7 +119,7 @@ aap-integration-tests  (THE builder + runner; host-managed)
   │     ├─ build our test-hosting code if needed (instrumented test APK / glue)
   │     └─ download module+plugin APKs (by commit → working dir → adb install)
   │            (plugin APKs ship compose-app → JS controller present)
-  ├─ device provider  ──►  an adb-connectable target  (GMD at build time on CI)
+  ├─ device provider  ──►  an adb-connectable target  (emulator-runner action on CI)
   └─ test driver, either:
         (A) instrumented test  ── runs on device ──┐  AAP API directly
         (B) adb am broadcast (RUN_JS) ─► JS aap.* ─┤  (optional)
@@ -78,10 +133,9 @@ aap-integration-tests  (THE builder + runner; host-managed)
   flexible; **[ASSUMPTION]** Node/JS, since it parses catalogs, talks to the
   GitHub API, and drives the device.
 - **Device is an abstraction:** the only hard requirement is *an adb target*.
-- **On-device execution (two options, §9):** plain **instrumented tests** calling
-  the AAP API directly (default, self-contained), or the **JS controller** via
-  `adb shell am broadcast` — available because plugins ship compose-app, but
-  **not mandatory**.
+- **On-device execution (§9):** the built path is the **JS controller** via
+  `adb shell am broadcast` — available because plugins ship compose-app. Plain
+  **instrumented tests** were the original "default" design but are not built.
 
 ## 5. Setup catalog
 
@@ -141,9 +195,10 @@ Responsibilities, in order:
    option: **skip if already installed** (default; checked via `adb`) or
    **force-reinstall** every package (`--reinstall`).
 4. Acquire a device via the device provider (§8).
-5. Run the test on-device (§9): either an instrumented test (default), or — if the
-   case uses path (B) — drive the JS controller via `adb shell am broadcast`
-   (RUN_JS / RUN_JS_ASYNC) and read results from the broadcast result data.
+5. Run the test on-device (§9): drive the JS controller via `adb shell am
+   broadcast` (RUN_JS / RUN_JS_ASYNC) and read results from the broadcast result
+   data. (Path (A) instrumented tests were planned as the default but are not
+   built — see §9.)
 6. Pull outputs and run verification (§10).
 7. Report results (machine-readable; suitable for CI surfacing — JUnit XML +
    artifacts).
@@ -231,18 +286,18 @@ emulator can host them — the runner choice is not blocked by ABI.
 ## 9. On-device execution and operation vocabulary
 
 On-device operations can be driven **two ways**, against the same AAP operation
-vocabulary (below). Neither makes the other mandatory:
+vocabulary (below). The design intended (A) as the default, but **only (B) is
+actually built** — every current case runs through it:
 
-- **(A) Instrumented tests (default, self-contained).** An `androidTest` APK we
-  build (our test-hosting code, §6) drives the AAP host API directly against the
-  installed plugin services. No JS, no broadcast — plain Android instrumentation.
-- **(B) JS controller (optional convenience).** Drive an embedded JS facade via
-  `adb shell am broadcast`. This is available "for free" because **every relevant
-  plugin ships with compose-app**, which embeds the reusable
-  `androidaudioplugin-js-controller` module — so wherever a plugin is installed,
-  the JS entrypoint already exists, with no extra host app to build.
-
-The JS path is described below for completeness; it is **not** required.
+- **(B) JS controller — the implemented path (all current cases).** Drive an
+  embedded JS facade via `adb shell am broadcast`. This is available "for free"
+  because **every relevant plugin ships with compose-app**, which embeds the
+  reusable `androidaudioplugin-js-controller` module — so wherever a plugin is
+  installed, the JS entrypoint already exists, with no extra host app to build.
+  (The uapmd cases use the parallel `uapmd.*` surface; see below.)
+- **(A) Instrumented tests — planned, not built.** The intent was an `androidTest`
+  APK (our test-hosting code, §6) driving the AAP host API directly. Nothing of
+  this exists yet; it remains the original "default" only on paper.
 
 ### (B) JS controller details
 
@@ -311,11 +366,21 @@ The implemented path-(B) facade (`aap-api.js`) currently exposes:
 getParameterValue`, preset get/set, and `getState/setState`. Offline
 `aap.render.*` is intentionally absent for now (added later on top of this).
 
-**Connectivity smoke (first runnable case).** The simplest test needs no
-verification: `create → prepare → activate → process × N → deactivate → destroy`.
-`tests/cases/connectivity-mda.json` does exactly this for **MDA DX10** (instrument)
-and **MDA Overdrive** (effect) via path (B); a pass just means the round-trip
-works. This is what runs end-to-end before the renderer/golden machinery exists.
+**Implemented case types** (all path (B); dispatched by `type` in `src/run.js`):
+
+| Type (`tests/cases/*.json`) | Surface | What it asserts | Status |
+|---|---|---|---|
+| `connectivity` (`connectivity-mda`) | aap | `create → prepare → activate → process×N → deactivate → destroy` round-trips | passes now |
+| `inspect` (`inspect-mda`) | aap | param/preset counts read; `getState`/`setState` round-trips | passes now |
+| `preset` (`wavetable-preset`) | aap | preset enumeration + selection across sampled indices; **logcat-scanned for an async service crash** (the JUCE/Looper bug this caught) | passes now (after the aap-juce + aap-core fixes) |
+| `uapmd-project` (`uapmd-project-mda`) | uapmd | new project → add tracks + plugins → save → reload → track count round-trips | **never passed** (uapmd deadlock) |
+| `uapmd-load-project` (`project4-load`) | uapmd | load a `.uapmdz` and verify every referenced plugin instantiated | **never passed** (uapmd deadlock) |
+
+A "pass" here is an **operation-outcome** assertion, not audio verification — the
+renderer/golden machinery (below) does not exist yet. Note the `preset` case is
+deliberately defensive: the crash it targets is *asynchronous* to the host call,
+so the case clears logcat, runs, then scans the plugin service's process for a
+native abort — a host-side "OK" alone is not a pass.
 
 ### Our own offline renderer
 
@@ -360,6 +425,12 @@ itself. The uapmd-app APK is downloaded by commit like any other artifact
 
 ## 10. Verification and golden output
 
+> **Status: only operation-outcome assertions are implemented.** The golden-WAV
+> workflow and tolerant audio comparison below are **not built** — `verify.js`
+> exists but no case calls it, and no rendered audio is produced. Everything in
+> this section past the "Instancing / Parameters / presets / state" bullets is a
+> plan, not current behavior.
+
 A test is a sequence of operations plus assertions on their outcomes:
 
 - **Instancing** — `create`/`prepare`/`activate` succeed; per-node status reported.
@@ -398,46 +469,70 @@ uploaded run artifact) even if the cache entry is evicted.
 - **AAP modules consumed as downloaded artifacts**, by commit, per the catalog
   (§5/§7) — *not* built from source, no submodules, no `publishToMavenLocal`.
   Only our own test-hosting code is built (§6).
-- **Device on GitHub Actions: GMD, set up at build time** (§8 — pending the
-  known-risk validation that GMD provisions on hosted runners).
+- **Device on GitHub Actions: as built, `integration-tests.yml` uses
+  `reactivecircus/android-emulator-runner`** (API 30, `google_apis`, x86_64, KVM
+  enabled) and drives the runner with `--device auto`, which reuses that
+  emulator. This differs from the original "our own GMD at build time" plan; our
+  `gmd` provider is the *local* fallback and is **unvalidated on hosted runners**.
+  **This CI path has never been confirmed green** — see the stability caveat.
+- **Only `connectivity-mda` is wired into CI.** The other four cases pass (or, for
+  uapmd, fail) only via ad-hoc local runs; none are gated yet. Wiring all five in
+  is pending (and blocked on the uapmd fix actually landing).
 - **Working dir persisted via Actions cache** (downloads, `repo@commit` cache,
   goldens) — keyed so it is reproducible/traceable (§5 principle 5, §7).
-- **PAT** with artifact-read scope is available for downloads (§7).
-- **Result tracking:** JUnit XML (rendered in the Checks tab) plus uploaded
-  artifacts (rendered WAVs, logcat) so failures are inspectable/audible. Nice to
-  have, not mandatory.
+- **PAT** with artifact-read scope is required for downloads (§7), supplied as the
+  `AAP_ARTIFACTS_PAT` secret / `GITHUB_TOKEN` / `--token`. A missing or
+  insufficiently-scoped PAT silently fails acquisition.
+- **Result tracking (planned):** JUnit XML + uploaded artifacts (logcat; rendered
+  WAVs once the renderer exists). Not yet emitted — the runner currently prints
+  human-readable PASS/FAIL and sets a non-zero exit on failure.
 
 ## 12. Open questions (consolidated)
 
-*(none blocking — see Resolved below)*
-
-Remaining design detail to settle during implementation, not a blocker:
-- **Per-case execution choice** — default everything to instrumented tests
-  (path A), and reserve the JS controller (path B) for cases where scripting is
-  genuinely more convenient. Confirm this default at build-out time.
+The real blockers are in the stability caveat (top) and §13. Design points still
+open:
+- **Execution path** — in practice **path (B) JS controller is the only one built**
+  and it has been sufficient. Path (A) instrumented tests were the original
+  "default" but were never needed/built; revisit only if (B) proves insufficient.
+- **uapmd reliability** — whether the uapmd surface can be made dependable enough
+  to gate on, or stays an opt-in/non-blocking signal (see §3, and the deadlock
+  noted in the stability caveat).
 
 *Resolved:*
 - **This repo is the sole builder + runner** (§§4,11) — no other repo runs these
   tests, no cross-repo dispatch, catalogs live here only.
-- On-device execution (§9) — **two paths**: instrumented tests (default) or the
-  JS controller (optional). JS is **not mandatory**; plugins ship compose-app so
+- On-device execution (§9) — built path is the **JS controller (B)**; instrumented
+  tests (A) were planned as default but never built. Plugins ship compose-app so
   the JS entrypoint exists wherever a plugin is installed, with no host app to build.
 - Catalog schema (§5) — simple flat list of `{repo, commit, artifacts, files?}`.
 - No build-from-source (§§4,6,11) — modules and plugins are downloaded by commit;
   only our own test-hosting code is built.
 - CI auth (§7) — a PAT with artifact-read scope is provided.
 - No binaries in git (§§5,7,10) — temp `.work/` dir persisted via Actions cache.
-- Device on Actions (§8) — GMD set up at build time (with a known risk to validate).
+- Device on Actions (§8) — **as built, the emulator-runner action** (not our own
+  GMD); the GMD provider is the local fallback and remains unvalidated on CI.
 
-## 13. First milestone (proposed, post-approval)
+## 13. Milestones — done vs. outstanding
 
-1. Stand up the runner skeleton + catalog parser + plugin acquisition
-   (download-by-commit, working dir, cache) — validated by downloading a real
-   plugin APK (e.g. an `aap-lv2-mda` artifact) and `adb install`ing it onto a
-   local device. The installed plugin's compose-app already carries the JS
-   controller; no host app to build.
-2. Drive one instancing + one render case end-to-end with an **instrumented test**
-   (path A) plus our offline renderer; optionally smoke-test the JS path (B).
-3. Add golden capture/approval + tolerant comparison.
-4. Only then: wire GMD-at-build-time into CI and validate it provisions on hosted
-   runners (the §8 known risk).
+**Done (built; works on a connected device, modulo the stability caveat):**
+1. Runner skeleton + catalog parser + download-by-commit acquisition + `.work/`
+   cache + `adb install`, validated against real `aap-lv2-mda` / `aaphostsample`
+   artifacts. The installed plugins' compose-app carries the JS controller; no
+   host app to build.
+2. Five path-(B) case types (§9) with operation-outcome assertions. The `aap`
+   cases (`connectivity`, `inspect`, `preset`) pass after fixing the framework
+   bugs they surfaced.
+
+**Outstanding (in rough priority order):**
+1. **Make the uapmd cases pass** — land + verify the uapmd app-thread deadlock fix
+   (instancing/save/load), then confirm `uapmd-project` and `project4-load` green.
+2. **Make CI trustworthy** — actually run the workflow on a hosted runner and
+   confirm the emulator path works; then wire all five cases in (gating once the
+   uapmd ones pass).
+3. **Real audio verification** — build the offline `aap.render.*` renderer (§9) and
+   the golden capture/approval + tolerant comparison (§10); only then is this more
+   than a smoke/operation gate.
+4. **Path (A) instrumented tests** (§9) — optional, if the JS path proves
+   insufficient.
+5. **Stabilize** — chase the async/ordering fragilities (e.g. `clearTracks` stale
+   state) so runs are repeatable, not one-shot.
