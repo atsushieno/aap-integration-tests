@@ -5,7 +5,7 @@
   "hostPackage": "dev.atsushieno.uapmd",
   "projectFile": "tests/cases/project4.uapmdz",
   "pluginPackages": [
-    "org.androidaudioplugin.ports.lv2.mda",
+    "org.androidaudioplugin.ports.lv2.mda_lv2",
     "org.androidaudioplugin.ports.juce.dexed",
     "org.androidaudioplugin.ports.juce.wavetable"
   ],

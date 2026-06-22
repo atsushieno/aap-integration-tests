@@ -82,8 +82,14 @@ async function main() {
     const results = [];
     for (const item of plan.runs) {
       console.log(`\n=== ${item.name} (catalog: ${item.catalogName ?? 'skipped'}) ===`);
-      const ok = await runCase(device.serial, item.testCase);
-      results.push({ name: item.name, ok });
+      try {
+        const result = await runCase(device.serial, item.testCase);
+        results.push({ name: item.name, ...result });
+      } catch (e) {
+        const error = String(e.message ?? e);
+        console.error(`ERROR ${item.name} — ${error}`);
+        results.push({ name: item.name, ok: false, error });
+      }
     }
     summarize(results);
   } finally {
@@ -134,31 +140,31 @@ async function runCase(serial, c) {
       const results = await runConnectivity(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`connectivity: ${results.length - failed.length}/${results.length} passed`);
-      return failed.length === 0;
+      return caseResult(failed);
     }
     case 'inspect': {
       const results = await runInspect(serial, c);
       const failed = results.filter((r) => !r.ok || r.state?.roundTrip === false);
       console.log(`inspect: ${results.length - failed.length}/${results.length} passed`);
-      return failed.length === 0;
+      return caseResult(failed);
     }
     case 'preset': {
       const results = await runPreset(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`preset: ${results.length - failed.length}/${results.length} passed`);
-      return failed.length === 0;
+      return caseResult(failed);
     }
     case 'uapmd-project': {
       const results = await runUapmdProject(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`uapmd-project: ${results.length - failed.length}/${results.length} passed`);
-      return failed.length === 0;
+      return caseResult(failed);
     }
     case 'uapmd-load-project': {
       const results = await runUapmdLoadProject(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`uapmd-load-project: ${results.length - failed.length}/${results.length} passed`);
-      return failed.length === 0;
+      return caseResult(failed);
     }
     // TODO: 'render' case type -> our offline renderer + verify.js golden compare.
     default:
@@ -166,12 +172,51 @@ async function runCase(serial, c) {
   }
 }
 
+function caseResult(failed) {
+  if (!failed.length) return { ok: true };
+  return { ok: false, error: summarizeFailures(failed) };
+}
+
 function summarize(results) {
   const failed = results.filter((r) => !r.ok);
   console.log('\n=== summary ===');
-  for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.name}`);
+  for (const r of results) {
+    const details = r.error ? ` — ${r.error}` : '';
+    console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.name}${details}`);
+  }
   console.log(`${results.length - failed.length}/${results.length} cases passed`);
   if (failed.length) process.exitCode = 1;
+}
+
+function summarizeFailures(failed) {
+  return failed.map(describeFailure).filter(Boolean).join('; ');
+}
+
+function describeFailure(r) {
+  if (r.error) return r.error;
+  if (r.state?.roundTrip === false) return `${r.plugin ?? r.test ?? 'result'} state roundTrip mismatch`;
+  if (r.test === 'uapmd-project') {
+    return `roundTrip:${r.roundTrip} (${r.tracksBeforeSave ?? '?'}->${r.tracksAfterLoad ?? '?'}) ` +
+      `missing:[${(r.missing ?? []).join(',')}] pluginsLoaded:[${(r.pluginsLoaded ?? []).join(',')}] ` +
+      `(save:${r.saveError ?? '-'} load:${r.loadError ?? '-'})`;
+  }
+  if (r.test === 'uapmd-load-project') {
+    return `loaded ${r.loadedCount ?? '?'}/${r.expectedCount ?? '?'}${formatProjectRefsForSummary(r)}`;
+  }
+  const json = JSON.stringify(r);
+  return json && json.length > 500 ? `${json.slice(0, 497)}...` : json;
+}
+
+function formatProjectRefsForSummary(r) {
+  const missing = formatRefs(r.missing);
+  const failed = formatRefs(r.failed);
+  const unexpected = formatRefs(r.unexpected);
+  return ` missing:[${missing}] failed:[${failed}] unexpected:[${unexpected}] loadErr:${r.loadError ?? '-'}`;
+}
+
+function formatRefs(refs) {
+  if (!Array.isArray(refs) || refs.length === 0) return '';
+  return refs.map((ref) => ref.displayName || ref.pluginId || JSON.stringify(ref)).join(', ');
 }
 
 function unique(values) {

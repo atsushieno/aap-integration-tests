@@ -13,6 +13,7 @@ import { repoRoot } from './paths.js';
 import { readUapmdProjectPluginReferences } from './uapmd-project.js';
 
 const run = promisify(execFile);
+const BROADCAST_TIMEOUT_MS = 30_000;
 
 // Control surfaces: the two on-device automation entrypoints we drive over
 // `adb am broadcast`. Both share the protocol shape (RUN_JS + base64 code,
@@ -29,10 +30,14 @@ const SURFACES = {
   // MainActivity is running).
   uapmd: {
     action: 'dev.atsushieno.uapmd.RUN_JS',
+    asyncAction: 'dev.atsushieno.uapmd.RUN_JS_ASYNC',
+    getJobAction: 'dev.atsushieno.uapmd.GET_JS_JOB',
+    clearJobAction: 'dev.atsushieno.uapmd.CLEAR_JS_JOB',
     receiver: () => 'dev.atsushieno.uapmd/dev.atsushieno.uapmd.AutomationReceiver',
     readyProbe: '(1)',
     isReady: (rc) => rc === 0,
     isNotRunning: (rc, data) => rc === 2 || /uapmd-app is not running/i.test(data ?? ''),
+    launchTimeoutMs: 180_000,
   },
 };
 
@@ -204,10 +209,52 @@ export async function runInspect(serial, c) {
 export async function runUapmdProject(serial, c) {
   const surface = SURFACES.uapmd;
   const hostPackage = c.hostPackage ?? 'dev.atsushieno.uapmd';
+  const plugins = c.plugins ?? [];
   await stopApps(serial, c, hostPackage);
   await launchHost(serial, surface, hostPackage);
 
-  const r = await connectOnce(serial, surface, hostPackage, uapmdProjectScript(c), 4,
+  const scan = await connectOnce(serial, surface, hostPackage, uapmdScanScript());
+  if (!scan.ok) {
+    console.log(`FAIL uapmd-project — scan failed: ${scan.error}`);
+    return [{ test: 'uapmd-project', ok: false, error: `scan failed: ${scan.error}` }];
+  }
+
+  const emptyProjectPath = await pushProjectToApp(serial, hostPackage, 'tests/cases/empty.uapmd');
+  await launchHost(serial, surface, hostPackage);
+  const reset = await connectOnce(serial, surface, hostPackage, uapmdLoadEmptyProjectScript(emptyProjectPath),
+    4, { acceptSemanticFailure: true });
+  if (!reset.ok) {
+    console.log(`FAIL uapmd-project — reset failed: ${reset.error}`);
+    return [{ test: 'uapmd-project', ok: false, error: `reset failed: ${reset.error}` }];
+  }
+  const resetResult = unwrap(reset.data);
+  if (!resetResult.ok) {
+    console.log(`FAIL uapmd-project — reset failed: ${JSON.stringify(resetResult)}`);
+    return [{ test: 'uapmd-project', ok: false, error: `reset failed: ${JSON.stringify(resetResult)}` }];
+  }
+
+  const created = [];
+  for (const plugin of plugins) {
+    const create = await connectOnce(serial, surface, hostPackage, uapmdCreatePluginTrackScript(c.pluginFormat ?? 'AAP', plugin),
+      4, { acceptSemanticFailure: true });
+    if (!create.ok) {
+      console.log(`FAIL uapmd-project — create ${plugin} failed: ${create.error}`);
+      return [{ test: 'uapmd-project', ok: false, error: `create ${plugin} failed: ${create.error}` }];
+    }
+    const info = unwrap(create.data);
+    if (!info.ok) {
+      console.log(`FAIL uapmd-project — create ${plugin} failed: ${info.error ?? 'unknown error'}`);
+      return [{ test: 'uapmd-project', ok: false, error: `create ${plugin} failed: ${info.error ?? 'unknown error'}` }];
+    }
+    const visible = await waitForUapmdPlugin(serial, surface, hostPackage, plugin, info.trackIndex);
+    if (!visible.ok) {
+      console.log(`FAIL uapmd-project — create ${plugin} did not become visible: ${visible.error}`);
+      return [{ test: 'uapmd-project', ok: false, error: `create ${plugin} did not become visible: ${visible.error}` }];
+    }
+    created.push({ plugin, trackIndex: info.trackIndex });
+  }
+
+  const r = await connectOnce(serial, surface, hostPackage, uapmdProjectSaveLoadScript(c, plugins), 4,
     { acceptSemanticFailure: true });
   if (!r.ok) {
     console.log(`FAIL uapmd-project — ${r.error}`);
@@ -217,8 +264,10 @@ export async function runUapmdProject(serial, c) {
   console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-project — ` +
     `tracksAdded:${v.tracksAdded} saved:${v.saved} loaded:${v.loaded} ` +
     `roundTrip:${v.roundTrip} (${v.tracksBeforeSave}->${v.tracksAfterLoad})` +
-    (v.ok ? '' : ` (save:${v.saveError ?? '-'} load:${v.loadError ?? '-'})`));
-  return [{ test: 'uapmd-project', ...v }];
+    (v.ok ? '' : ` missing:[${(v.missing ?? []).join(',')}] ` +
+      `pluginsLoaded:[${(v.pluginsLoaded ?? []).join(',')}] ` +
+      `(save:${v.saveError ?? '-'} load:${v.loadError ?? '-'})`));
+  return [{ test: 'uapmd-project', created, ...v }];
 }
 
 /**
@@ -241,19 +290,20 @@ export async function runUapmdLoadProject(serial, c) {
   // activity on a constrained CI emulator. Bring it back to foreground before
   // sending the heavy project-load automation payload.
   await launchHost(serial, surface, hostPackage);
+  await delay(5000);
   // Loading many plugins (incl. heavy JUCE ones) is slow; allow extra retry attempts.
-  const r = await connectOnce(serial, surface, hostPackage, uapmdLoadProjectScript(devicePath, expected), 6,
-    { acceptSemanticFailure: true });
+  const r = await runJsJob(serial, surface, hostPackage, uapmdLoadProjectScript(devicePath, expected),
+    { timeoutMs: 180_000 });
   if (!r.ok) {
     const details = await automationTargetDetails(serial, hostPackage);
     const error = `${r.error}${details ? ` (${details})` : ''}`;
     console.log(`FAIL uapmd-load-project — ${error}`);
-    return [{ test: 'uapmd-load-project', ok: false, error }];
+    return [{ test: 'uapmd-load-project', ok: false, error, expectedCount: expected.length }];
   }
   const v = unwrap(r.data);
   console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-load-project — loaded ${v.loadedCount}/${expected.length}` +
     (v.ok ? '' : formatProjectLoadFailure(v)));
-  return [{ test: 'uapmd-load-project', ...v }];
+  return [{ test: 'uapmd-load-project', expectedCount: expected.length, ...v }];
 }
 
 function formatProjectLoadFailure(v) {
@@ -291,12 +341,22 @@ async function pushProjectToApp(serial, hostPackage, projectFile) {
 /** Load the project, then collect which plugin nodes instantiated vs failed, and which expected are missing. */
 function uapmdLoadProjectScript(devicePath, expectedPlugins) {
   return `(function(){
+    function clearAllTracks() {
+      for (var guard = 0; guard < 20; guard++) {
+        var tracks = uapmd.sequencer.getTrackInfos() || [];
+        if (tracks.length === 0) return true;
+        for (var i = tracks.length - 1; i >= 0; i--) {
+          var idx = (typeof tracks[i].trackIndex === 'number') ? tracks[i].trackIndex : i;
+          try { uapmd.sequencer.removeTrack(idx); } catch (e) {}
+        }
+        try { uapmd.sequencer.clearTracks(); } catch (e) {}
+      }
+      return (uapmd.sequencer.getTrackInfos() || []).length === 0;
+    }
     // Disable the live audio engine during the heavy load so the realtime render
     // thread does not compete for CPU (a busy engine can make a many-plugin load
     // slow enough to hit the app-thread timeout, or OOM/destabilize the device).
     try { uapmd.audio.setEngineEnabled(false); } catch (e) {}
-    try { uapmd.scanTool.performScanning(); } catch (e) {}
-    uapmd.sequencer.clearTracks();
     var load = uapmd.project.load(${JSON.stringify(devicePath)});
     try { uapmd.audio.setEngineEnabled(true); } catch (e) {}
     var tracks = uapmd.sequencer.getTrackInfos() || [];
@@ -345,47 +405,143 @@ function uapmdLoadProjectScript(devicePath, expectedPlugins) {
   })()`;
 }
 
-/** JS evaluated in uapmd-app: new project -> add tracks + plugins -> save -> clear -> load -> verify. */
-function uapmdProjectScript(c) {
+async function waitForUapmdPlugin(serial, surface, hostPackage, pluginId, trackIndex) {
+  let last = null;
+  for (let i = 0; i < 12; i++) {
+    const r = await connectOnce(serial, surface, hostPackage,
+      uapmdPluginVisibleScript(pluginId, trackIndex), 3, { acceptSemanticFailure: true });
+    if (!r.ok) return r;
+    const v = unwrap(r.data);
+    last = v;
+    if (v.ok) return { ok: true, data: r.data };
+    await delay(1000);
+  }
+  return { ok: false, error: `plugin ${pluginId} was not visible on track ${trackIndex}; last=${JSON.stringify(last)}` };
+}
+
+function uapmdResetTracksScript() {
+  return `(function(){
+    ${clearAllTracksFunctionSource()}
+    var ok = clearAllTracks();
+    return { ok: ok, tracksAfterReset: (uapmd.sequencer.getTrackInfos() || []).length };
+  })()`;
+}
+
+function uapmdLoadEmptyProjectScript(devicePath) {
+  return `(function(){
+    try { uapmd.audio.setEngineEnabled(false); } catch (e) {}
+    var load = uapmd.project.load(${JSON.stringify(devicePath)});
+    var tracks = uapmd.sequencer.getTrackInfos() || [];
+    return {
+      ok: !!(load && load.success) && tracks.length === 0,
+      loaded: !!(load && load.success),
+      loadError: load && load.error,
+      tracksAfterReset: tracks.length
+    };
+  })()`;
+}
+
+function uapmdCreatePluginTrackScript(format, pluginId) {
+  return `(function(){
+    var trackIndex = uapmd.sequencer.addTrack();
+    try {
+      var instanceId = uapmd.instancing.create(${JSON.stringify(format)}, ${JSON.stringify(pluginId)}, trackIndex);
+      return { ok: true, pluginId: ${JSON.stringify(pluginId)}, trackIndex: trackIndex, instanceId: instanceId };
+    } catch (e) {
+      return { ok: false, pluginId: ${JSON.stringify(pluginId)}, trackIndex: trackIndex, error: String(e) };
+    }
+  })()`;
+}
+
+function uapmdPluginVisibleScript(pluginId, trackIndex) {
+  return `(function(){
+    var tracks = uapmd.sequencer.getTrackInfos() || [];
+    var seen = [];
+    for (var i = 0; i < tracks.length; i++) {
+      var nodes = tracks[i].nodes || [];
+      for (var j = 0; j < nodes.length; j++) {
+        var nd = nodes[j];
+        if (!nd.isPlugin) continue;
+        seen.push({ trackIndex: i, pluginId: nd.pluginId || '', displayName: nd.displayName || '' });
+        if (i === ${trackIndex} && nd.pluginId === ${JSON.stringify(pluginId)})
+          return { ok: true, pluginId: ${JSON.stringify(pluginId)}, trackIndex: ${trackIndex}, seen: seen };
+      }
+    }
+    return { ok: false, pluginId: ${JSON.stringify(pluginId)}, trackIndex: ${trackIndex}, seen: seen };
+  })()`;
+}
+
+/** JS evaluated in uapmd-app after tracks/plugins are created: save -> clear -> load -> verify. */
+function uapmdProjectSaveLoadScript(c, plugins) {
   const hostPackage = c.hostPackage ?? 'dev.atsushieno.uapmd';
-  const format = JSON.stringify(c.pluginFormat ?? 'AAP');
-  const plugins = JSON.stringify(c.plugins ?? []);
+  const expectedPlugins = JSON.stringify(plugins ?? []);
   // Use the app's private internal dir, which it owns and can create under. Scoped
   // storage forbids the app raw-mkdir'ing its /storage/.../Android/data/<pkg> dir.
   const savePath = JSON.stringify(
     c.savePath ?? `/data/data/${hostPackage}/files/itest-project.uapmd`);
   return `(function(){
-    try { uapmd.scanTool.performScanning(); } catch (e) {}   // make AAP plugins known to the catalog
-    uapmd.sequencer.clearTracks();                            // start from an empty project
-    var plugins = ${plugins};
-    var tracksAdded = 0;
-    for (var i = 0; i < plugins.length; i++) {
-      uapmd.sequencer.addTrack();
-      tracksAdded++;
-      uapmd.instancing.create(${format}, plugins[i], i);     // add plugin onto the new track
-    }
+    ${clearAllTracksFunctionSource()}
+    var plugins = ${expectedPlugins};
     var count = function(t){ return Array.isArray(t) ? t.length : t; };
     var tracksBeforeSave = count(uapmd.sequencer.getTrackInfos());
     var save = uapmd.project.save(${savePath});
-    uapmd.sequencer.clearTracks();                            // wipe before reload
+    clearAllTracks();                                         // wipe before reload
     var load = uapmd.project.load(${savePath});
-    var tracksAfterLoad = count(uapmd.sequencer.getTrackInfos());
+    var tracks = uapmd.sequencer.getTrackInfos() || [];
+    var tracksAfterLoad = count(tracks);
+    var loadedPlugins = [];
+    for (var i = 0; i < tracks.length; i++) {
+      var nodes = tracks[i].nodes || [];
+      for (var j = 0; j < nodes.length; j++) {
+        var nd = nodes[j];
+        if (nd.isPlugin && nd.pluginId) loadedPlugins.push(nd.pluginId);
+      }
+    }
+    var missing = plugins.filter(function(p){ return loadedPlugins.indexOf(p) < 0; });
     var saved = !!(save && save.success);
-    var loaded = !!(load && load.success);
+    var projectLoaded = !!(load && load.success);
     return {
-      // Full round-trip: ops must succeed AND the reloaded project must restore the
-      // same track count that was saved (otherwise save/load lost content).
-      ok: saved && loaded && tracksAfterLoad === tracksBeforeSave,
-      tracksAdded: tracksAdded,
+      // Full round-trip: ops must succeed AND every plugin created before save
+      // must be instantiated after reload. Track count alone is not stable enough
+      // on uapmd because stale/empty tracks can appear around reset/load.
+      ok: saved && projectLoaded && missing.length === 0,
+      tracksAdded: plugins.length,
       saved: saved,
-      loaded: loaded,
+      loaded: projectLoaded,
       tracksBeforeSave: tracksBeforeSave,
       tracksAfterLoad: tracksAfterLoad,
-      roundTrip: tracksAfterLoad === tracksBeforeSave,
+      pluginsLoaded: loadedPlugins,
+      missing: missing,
+      roundTrip: missing.length === 0,
       saveError: save && save.error,
       loadError: load && load.error
     };
   })()`;
+}
+
+function uapmdScanScript() {
+  return `(function(){
+    try { uapmd.audio.setEngineEnabled(false); } catch (e) {}
+    try { uapmd.scanTool.performScanning(); } catch (e) {
+      return { ok: false, phase: 'scan', error: String(e) };
+    }
+    return { ok: true, phase: 'scan' };
+  })()`;
+}
+
+function clearAllTracksFunctionSource() {
+  return `function clearAllTracks() {
+      for (var guard = 0; guard < 20; guard++) {
+        var tracks = uapmd.sequencer.getTrackInfos() || [];
+        if (tracks.length === 0) return true;
+        for (var i = tracks.length - 1; i >= 0; i--) {
+          var idx = (typeof tracks[i].trackIndex === 'number') ? tracks[i].trackIndex : i;
+          try { uapmd.sequencer.removeTrack(idx); } catch (e) {}
+        }
+        try { uapmd.sequencer.clearTracks(); } catch (e) {}
+      }
+      return (uapmd.sequencer.getTrackInfos() || []).length === 0;
+    }`;
 }
 
 /**
@@ -448,7 +604,20 @@ function unwrap(data) {
 async function connectOnce(serial, surface, hostPackage, code, attempts = 4, opts = {}) {
   let lastError = '';
   for (let i = 1; i <= attempts; i++) {
-    const { resultCode, data } = await runJs(serial, surface, hostPackage, code);
+    let resultCode;
+    let data;
+    try {
+      ({ resultCode, data } = await runJs(serial, surface, hostPackage, code, opts));
+    } catch (e) {
+      lastError = describeRunJsError(e);
+      if (i < attempts) {
+        console.warn(`${lastError}. Relaunching ${hostPackage} before retry ${i + 1}/${attempts}.`);
+        await forceStopPackage(serial, hostPackage);
+        await launchHost(serial, surface, hostPackage);
+        continue;
+      }
+      return { ok: false, error: lastError };
+    }
     if (resultCode === 0 && parsedOk(data)) return { ok: true, data };
     if (opts.acceptSemanticFailure && resultCode === 0 && parsedResultObject(data))
       return { ok: true, data };
@@ -476,6 +645,13 @@ async function connectOnce(serial, surface, hostPackage, code, attempts = 4, opt
   return { ok: false, error: lastError };
 }
 
+function describeRunJsError(e) {
+  const msg = String(e.stderr || e.stdout || e.message || e);
+  if (e.killed || e.signal === 'SIGKILL' || /timed out/i.test(msg))
+    return `adb broadcast timed out after ${e.timeoutMs ?? BROADCAST_TIMEOUT_MS}ms; target app likely ANR'd or did not finish JS automation`;
+  return `adb broadcast failed: ${msg.split('\n')[0]}`;
+}
+
 /** JS evaluated on-device: create -> prepare -> activate -> process -> dispose. */
 function connectivityScript(pluginId, frameCount, sampleRate, blocks) {
   const pid = JSON.stringify(pluginId);
@@ -490,15 +666,105 @@ function connectivityScript(pluginId, frameCount, sampleRate, blocks) {
 }
 
 /** Send one RUN_JS broadcast and parse its result. Code is passed base64 to dodge shell escaping. */
-async function runJs(serial, surface, hostPackage, code) {
+async function runJs(serial, surface, hostPackage, code, opts = {}) {
   const b64 = Buffer.from(code, 'utf8').toString('base64');
+  const timeout = opts.broadcastTimeoutMs ?? BROADCAST_TIMEOUT_MS;
   const { stdout } = await adb(serial, [
     'shell', 'am', 'broadcast',
     '-a', surface.action,
     '-n', surface.receiver(hostPackage),
     '--es', 'code_base64', b64,
-  ]);
+  ], { timeout, killSignal: 'SIGKILL' });
   return parseBroadcast(stdout);
+}
+
+async function runJsJob(serial, surface, hostPackage, code, opts = {}) {
+  if (!surface.asyncAction || !surface.getJobAction)
+    return { ok: false, error: 'surface does not support async JS jobs' };
+
+  const b64 = Buffer.from(code, 'utf8').toString('base64');
+  let start = null;
+  for (let i = 1; i <= 4; i++) {
+    try {
+      start = await broadcast(serial, surface, hostPackage, surface.asyncAction, [
+        '--es', 'code_base64', b64,
+      ]);
+    } catch (e) {
+      const error = describeRunJsError(e);
+      if (i < 4) {
+        console.warn(`${error}. Relaunching ${hostPackage} before job start retry ${i + 1}/4.`);
+        await launchHost(serial, surface, hostPackage);
+        await delay(5000);
+        continue;
+      }
+      return { ok: false, error: `failed to start async JS job: ${error}` };
+    }
+    if (start.resultCode === 0 && start.data && !start.data.startsWith('ERROR')) break;
+    if (surface.isNotRunning?.(start.resultCode, start.data) && i < 4) {
+      console.warn(`async automation runtime is not attached (broadcast result=${start.resultCode}: ${start.data || '(no data)'}). ` +
+        `Relaunching ${hostPackage} before job start retry ${i + 1}/4.`);
+      await launchHost(serial, surface, hostPackage);
+      await delay(5000);
+      continue;
+    }
+    return { ok: false, error: `failed to start async JS job: result=${start.resultCode}, data=${start.data || '(empty)'}` };
+  }
+
+  const jobId = start.data;
+  const deadline = Date.now() + (opts.timeoutMs ?? 180_000);
+  let last = null;
+  try {
+    while (Date.now() < deadline) {
+      await delay(opts.pollMs ?? 2000);
+      let poll;
+      try {
+        poll = await broadcast(serial, surface, hostPackage, surface.getJobAction, [
+          '--es', 'job_id', jobId,
+        ]);
+      } catch (e) {
+        last = describeRunJsError(e);
+        continue;
+      }
+      if (poll.resultCode !== 0) {
+        last = `poll result=${poll.resultCode}, data=${poll.data || '(empty)'}`;
+        continue;
+      }
+      const job = parseJobResult(poll.data);
+      last = job;
+      if (job?.state !== 'completed') continue;
+      const result = job.result;
+      if (typeof result === 'string' && result.startsWith('ERROR'))
+        return { ok: false, error: result };
+      if (!parsedResultObject(result))
+        return { ok: false, error: `async JS job returned unparseable result: ${result ?? '(empty)'}` };
+      return { ok: true, data: result };
+    }
+    return { ok: false, error: `async JS job ${jobId} timed out after ${opts.timeoutMs ?? 180_000}ms; last=${JSON.stringify(last)}` };
+  } finally {
+    if (surface.clearJobAction) {
+      await broadcast(serial, surface, hostPackage, surface.clearJobAction, [
+        '--es', 'job_id', jobId,
+      ]).catch(() => {});
+    }
+  }
+}
+
+async function broadcast(serial, surface, hostPackage, action, extras) {
+  const { stdout } = await adb(serial, [
+    'shell', 'am', 'broadcast',
+    '-a', action,
+    '-n', surface.receiver(hostPackage),
+    ...extras,
+  ], { timeout: BROADCAST_TIMEOUT_MS, killSignal: 'SIGKILL' });
+  return parseBroadcast(stdout);
+}
+
+function parseJobResult(data) {
+  try {
+    return JSON.parse(data);
+  } catch {
+    return null;
+  }
 }
 
 /** Parse `Broadcast completed: result=<code>, data="<data>"`. */
@@ -516,17 +782,32 @@ function parseBroadcast(stdout) {
  */
 async function launchHost(serial, surface, hostPackage) {
   await startActivity(serial, hostPackage);
-  const deadline = Date.now() + 60_000;
+  let lastStart = Date.now();
+  const deadline = Date.now() + (surface.launchTimeoutMs ?? 60_000);
   let last = '';
+  let readyCount = 0;
+  const needed = surface.stableReadyCount ?? 1;
   while (Date.now() < deadline) {
     try {
       const { resultCode, data } = await runJs(serial, surface, hostPackage, surface.readyProbe);
       last = data;
-      if (surface.isReady(resultCode, data)) return;
+      if (surface.isReady(resultCode, data)) {
+        readyCount++;
+        if (readyCount >= needed) return;
+        await delay(surface.stableReadyDelayMs ?? 500);
+        continue;
+      }
+      readyCount = 0;
     } catch { /* app still starting */ }
+    if (Date.now() - lastStart > 15_000) {
+      await startActivity(serial, hostPackage).catch(() => {});
+      lastStart = Date.now();
+    }
     await delay(1500);
   }
-  throw new Error(`Host app ${hostPackage} did not become ready in time (last probe: ${last}).`);
+  const details = await automationTargetDetails(serial, hostPackage);
+  throw new Error(`Host app ${hostPackage} did not become ready in time ` +
+    `(last probe: ${last || '(empty)'}${details ? `; ${details}` : ''}).`);
 }
 
 /** Start the host's launchable activity (resolve it explicitly; more reliable than monkey). */
@@ -554,12 +835,16 @@ async function stopApps(serial, c, hostPackage) {
     .filter((p) => typeof p === 'string' && p.length > 0));
   for (const pkg of packages) {
     try {
-      await adb(serial, ['shell', 'am', 'force-stop', pkg]);
+      await forceStopPackage(serial, pkg);
       console.log(`force-stop ${pkg}`);
     } catch (e) {
       console.warn(`force-stop warning for ${pkg}: ${String(e.message ?? e).split('\n')[0]}`);
     }
   }
+}
+
+async function forceStopPackage(serial, pkg) {
+  await adb(serial, ['shell', 'am', 'force-stop', pkg]);
 }
 
 async function automationTargetDetails(serial, hostPackage) {
@@ -611,8 +896,44 @@ function parsedResultObject(data) {
   }
 }
 
-function adb(serial, args) {
-  return run('adb', serial ? ['-s', serial, ...args] : args);
+function adb(serial, args, opts = {}) {
+  if (args && !Array.isArray(args)) {
+    opts = args;
+    args = [];
+  }
+  const adbArgs = serial ? ['-s', serial, ...args] : args;
+  if (opts.timeout) return runWithManualTimeout('adb', adbArgs, opts);
+  return run('adb', adbArgs, opts);
+}
+
+function runWithManualTimeout(file, args, opts) {
+  return new Promise((resolve, reject) => {
+    const child = execFile(file, args, {}, (error, stdout, stderr) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        const e = new Error(`Command timed out after ${opts.timeout}ms: ${file} ${args.join(' ')}`);
+        e.killed = true;
+        e.signal = opts.killSignal ?? 'SIGTERM';
+        e.timeoutMs = opts.timeout;
+        e.stdout = stdout;
+        e.stderr = stderr;
+        reject(e);
+        return;
+      }
+      if (error) {
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill(opts.killSignal ?? 'SIGTERM'); } catch {}
+    }, opts.timeout);
+  });
 }
 function unique(values) {
   return [...new Set(values)];
