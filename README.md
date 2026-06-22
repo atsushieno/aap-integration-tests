@@ -43,19 +43,28 @@ android-tests/       (later) Gradle instrumented-test project
 ```sh
 npm install
 
-# Against an already-connected device/emulator (skip download+install):
-node src/cli.js --case connectivity-mda --device auto --skip-acquire
-
-# No device: download the MDA plugin by commit and bring up an emulator (GMD).
-# Plugin CI APKs predate the JS controller, so provide a host app that has it:
+# Run the integration matrix with one command.
+# Downloads catalog APKs, installs them once, then runs every committed CI case.
 export GITHUB_TOKEN=<PAT with artifact-read scope>
-node src/cli.js --case connectivity-mda --device gmd \
-  --host-apk /path/to/aaphostsample-debug.apk
+npm run integration -- --device auto
+
+# If the APKs are already installed on a connected device/emulator:
+npm run integration -- --device auto --skip-acquire --skip-install
+
+# No device: download APKs and bring up an emulator (GMD).
+export GITHUB_TOKEN=<PAT with artifact-read scope>
+npm run integration -- --device gmd
 ```
 
 Key options: `--token` (PAT; or `$GITHUB_TOKEN`), `--device auto|local|gmd|firebase`,
-`--skip-acquire` / `--skip-install`, `--reinstall`, `--host-apk`. Requires `adb`
-(and the Android SDK emulator for `gmd`).
+`--serial`, `--suite ci|all`, `--skip-acquire` / `--skip-install`, `--reinstall`,
+`--host-apk`. Requires `adb` (and the Android SDK emulator for `gmd`).
+
+For single-case debugging, keep using `--case`:
+
+```sh
+npm run integration -- --case connectivity-mda --catalog mda-ci --device auto
+```
 
 ## CI (GitHub Actions)
 

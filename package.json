@@ -9,6 +9,7 @@
     "aap-itest": "src/cli.js"
   },
   "scripts": {
+    "integration": "node src/cli.js",
     "start": "node src/cli.js",
     "test": "node --test"
   },

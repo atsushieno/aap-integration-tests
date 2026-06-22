@@ -2,7 +2,7 @@
 // Entry point for the host-managed test runner (ARCHITECTURE.md §6). Wires the
 // pipeline: catalog -> acquire -> install -> run -> verify.
 
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
@@ -13,11 +13,14 @@ import { acquire } from './acquire.js';
 import { installAll } from './install.js';
 import { acquireDevice } from './device/index.js';
 import { runConnectivity, runInspect, runPreset, runUapmdProject, runUapmdLoadProject } from './run.js';
-import { repoRoot } from './paths.js';
+import { paths, repoRoot } from './paths.js';
+import { defaultSuiteName, listSuites, loadSuite } from './suite.js';
 
 async function main() {
   const argv = yargs(hideBin(process.argv))
     .option('case', { type: 'string', describe: 'test case under tests/cases/ (e.g. connectivity-mda)' })
+    .option('suite', { type: 'string',
+      describe: `suite to run (${listSuites().join('|')}); defaults to ${defaultSuiteName} when no --case/--catalog is given` })
     .option('catalog', { type: 'string', describe: 'catalog name; defaults to the case\'s catalog' })
     .option('device', { type: 'string', default: 'auto', choices: ['auto', 'local', 'gmd', 'firebase'],
       describe: 'auto = existing target -> Firebase (if there) -> GMD' })
@@ -34,23 +37,25 @@ async function main() {
     .option('skip-install', { type: 'boolean', default: false,
       describe: 'skip adb install entirely' })
     .check((a) => {
-      if (!a.case && !a.catalog) throw new Error('Provide --case or --catalog.');
+      if (a.case && a.suite) throw new Error('Pass either --case or --suite, not both.');
       return true;
     })
     .strict()
     .parse();
 
-  const testCase = argv.case ? await loadCase(argv.case) : null;
-  const catalogName = argv.catalog ?? testCase?.catalog;
+  const plan = await loadRunPlan(argv);
 
   if (argv.skipAcquire) {
     console.log('[1-2/5] skip catalog/acquire (running against installed apps)');
   } else {
-    if (!catalogName) throw new Error('No catalog: pass --catalog, use a --case that names one, or --skip-acquire.');
-    console.log(`[1/5] load catalog: ${catalogName}`);
-    const catalog = await loadCatalog(catalogName);
-    console.log(`[2/5] acquire ${catalog.entries.length} entr(y/ies)`);
-    await acquire(catalog, { token: argv.token });
+    if (!plan.catalogNames.length) throw new Error('No catalog: pass --catalog, use a --case/--suite that names one, or --skip-acquire.');
+    await resetDownloadedApks();
+    for (const catalogName of plan.catalogNames) {
+      console.log(`[1/5] load catalog: ${catalogName}`);
+      const catalog = await loadCatalog(catalogName);
+      console.log(`[2/5] acquire ${catalog.entries.length} entr(y/ies) from ${catalogName}`);
+      await acquire(catalog, { token: argv.token });
+    }
   }
 
   console.log(`[3/5] acquire device: ${argv.device}`);
@@ -70,11 +75,17 @@ async function main() {
     }
 
     console.log('[5/5] run');
-    if (!testCase) {
+    if (!plan.runs.length) {
       console.warn('  no --case given; setup complete, nothing to run.');
       return;
     }
-    await runCase(device.serial, testCase);
+    const results = [];
+    for (const item of plan.runs) {
+      console.log(`\n=== ${item.name} (catalog: ${item.catalogName ?? 'skipped'}) ===`);
+      const ok = await runCase(device.serial, item.testCase);
+      results.push({ name: item.name, ok });
+    }
+    summarize(results);
   } finally {
     await device.dispose();
   }
@@ -92,47 +103,84 @@ async function loadCase(name) {
   return JSON.parse(await readFile(file, 'utf8'));
 }
 
+async function loadRunPlan(argv) {
+  if (argv.case) {
+    const testCase = await loadCase(argv.case);
+    const catalogName = argv.catalog ?? testCase.catalog;
+    return {
+      catalogNames: catalogName ? [catalogName] : [],
+      runs: [{ name: argv.case, catalogName, testCase }],
+    };
+  }
+
+  if (argv.catalog && !argv.suite) {
+    return { catalogNames: [argv.catalog], runs: [] };
+  }
+
+  const suiteName = argv.suite ?? defaultSuiteName;
+  const suite = loadSuite(suiteName);
+  const runs = [];
+  for (const entry of suite) {
+    const testCase = await loadCase(entry.case);
+    const catalogName = argv.catalog ?? entry.catalog ?? testCase.catalog;
+    runs.push({ name: entry.case, catalogName, testCase });
+  }
+  return { catalogNames: unique(runs.map((r) => r.catalogName).filter(Boolean)), runs };
+}
+
 async function runCase(serial, c) {
   switch (c.type) {
     case 'connectivity': {
       const results = await runConnectivity(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`connectivity: ${results.length - failed.length}/${results.length} passed`);
-      if (failed.length) process.exitCode = 1;
-      break;
+      return failed.length === 0;
     }
     case 'inspect': {
       const results = await runInspect(serial, c);
       const failed = results.filter((r) => !r.ok || r.state?.roundTrip === false);
       console.log(`inspect: ${results.length - failed.length}/${results.length} passed`);
-      if (failed.length) process.exitCode = 1;
-      break;
+      return failed.length === 0;
     }
     case 'preset': {
       const results = await runPreset(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`preset: ${results.length - failed.length}/${results.length} passed`);
-      if (failed.length) process.exitCode = 1;
-      break;
+      return failed.length === 0;
     }
     case 'uapmd-project': {
       const results = await runUapmdProject(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`uapmd-project: ${results.length - failed.length}/${results.length} passed`);
-      if (failed.length) process.exitCode = 1;
-      break;
+      return failed.length === 0;
     }
     case 'uapmd-load-project': {
       const results = await runUapmdLoadProject(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`uapmd-load-project: ${results.length - failed.length}/${results.length} passed`);
-      if (failed.length) process.exitCode = 1;
-      break;
+      return failed.length === 0;
     }
     // TODO: 'render' case type -> our offline renderer + verify.js golden compare.
     default:
       throw new Error(`Unknown case type: ${c.type}`);
   }
+}
+
+function summarize(results) {
+  const failed = results.filter((r) => !r.ok);
+  console.log('\n=== summary ===');
+  for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'} ${r.name}`);
+  console.log(`${results.length - failed.length}/${results.length} cases passed`);
+  if (failed.length) process.exitCode = 1;
+}
+
+function unique(values) {
+  return [...new Set(values)];
+}
+
+async function resetDownloadedApks() {
+  await rm(paths.downloaded, { recursive: true, force: true });
+  await mkdir(paths.downloaded, { recursive: true });
 }
 
 main().catch((e) => {
