@@ -29,6 +29,7 @@ on:
       - 'catalogs/**'
       - 'tests/**'
       - 'package.json'
+      - '.github/scripts/**'
       - '.github/workflows/integration-tests.yml'
 
 jobs:
@@ -86,15 +87,7 @@ jobs:
           disable-animations: true
           # The emulator is up here; `--device auto` reuses it. The default suite
           # downloads every catalog it needs from artifacts (PAT via GITHUB_TOKEN below).
-          script: |
-            mkdir -p .work/ci
-            adb logcat -c || true
-            set +e
-            npm test -- --device auto
-            status=$?
-            adb logcat -d > .work/ci/logcat.txt || true
-            adb shell dumpsys meminfo > .work/ci/meminfo.txt || true
-            exit "$status"
+          script: bash .github/scripts/run-integration-suite.sh
         env:
           # acquire.js reads GITHUB_TOKEN; this PAT can read cross-repo artifacts.
           GITHUB_TOKEN: ${{ secrets.AAP_ARTIFACTS_PAT }}
