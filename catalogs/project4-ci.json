@@ -21,7 +21,7 @@
     },
     {
       "repo": "atsushieno/aap-juce-wavetable",
-      "commit": "87e35660959b4cae605e41ec429642400e4fdfea",
+      "commit": "871ba5594140d790005a5ece9e91f6ba04868136",
       "artifacts": ["dist"],
       "files": { "Wavetable-debug.apk": "aap-juce-wavetable.apk" }
     }
