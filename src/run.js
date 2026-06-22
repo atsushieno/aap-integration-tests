@@ -32,6 +32,7 @@ const SURFACES = {
     receiver: () => 'dev.atsushieno.uapmd/dev.atsushieno.uapmd.AutomationReceiver',
     readyProbe: '(1)',
     isReady: (rc) => rc === 0,
+    isNotRunning: (rc, data) => rc === 2 || /uapmd-app is not running/i.test(data ?? ''),
   },
 };
 
@@ -206,7 +207,8 @@ export async function runUapmdProject(serial, c) {
   await stopApps(serial, c, hostPackage);
   await launchHost(serial, surface, hostPackage);
 
-  const r = await connectOnce(serial, surface, hostPackage, uapmdProjectScript(c));
+  const r = await connectOnce(serial, surface, hostPackage, uapmdProjectScript(c), 4,
+    { acceptSemanticFailure: true });
   if (!r.ok) {
     console.log(`FAIL uapmd-project — ${r.error}`);
     return [{ test: 'uapmd-project', ok: false, error: r.error }];
@@ -235,11 +237,18 @@ export async function runUapmdLoadProject(serial, c) {
   await launchHost(serial, surface, hostPackage);
 
   const devicePath = await pushProjectToApp(serial, hostPackage, c.projectFile);
+  // `adb push` / `run-as` can leave enough time for Android to stop the SDL
+  // activity on a constrained CI emulator. Bring it back to foreground before
+  // sending the heavy project-load automation payload.
+  await launchHost(serial, surface, hostPackage);
   // Loading many plugins (incl. heavy JUCE ones) is slow; allow extra retry attempts.
-  const r = await connectOnce(serial, surface, hostPackage, uapmdLoadProjectScript(devicePath, expected), 6);
+  const r = await connectOnce(serial, surface, hostPackage, uapmdLoadProjectScript(devicePath, expected), 6,
+    { acceptSemanticFailure: true });
   if (!r.ok) {
-    console.log(`FAIL uapmd-load-project — ${r.error}`);
-    return [{ test: 'uapmd-load-project', ok: false, error: r.error }];
+    const details = await automationTargetDetails(serial, hostPackage);
+    const error = `${r.error}${details ? ` (${details})` : ''}`;
+    console.log(`FAIL uapmd-load-project — ${error}`);
+    return [{ test: 'uapmd-load-project', ok: false, error }];
   }
   const v = unwrap(r.data);
   console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-load-project — loaded ${v.loadedCount}/${expected.length}` +
@@ -431,16 +440,37 @@ function unwrap(data) {
  * even though the bind completes in the background. A retry (the engine serializes, so it runs once
  * the bind is done) then succeeds. A definitive `ERROR:` is NOT retried.
  *
- * Pass requires BOTH transport result=0 AND the script returning our {ok:true} sentinel; the native
- * facade reports failures as a returned "ERROR: ..." string with transport result=0.
+ * By default, pass requires BOTH transport result=0 AND the script returning our {ok:true}
+ * sentinel; the native facade reports failures as a returned "ERROR: ..." string with
+ * transport result=0. Some uapmd cases intentionally return {ok:false, ...details}
+ * for semantic failures; pass acceptSemanticFailure so the caller can format those details.
  */
-async function connectOnce(serial, surface, hostPackage, code, attempts = 4) {
+async function connectOnce(serial, surface, hostPackage, code, attempts = 4, opts = {}) {
   let lastError = '';
   for (let i = 1; i <= attempts; i++) {
     const { resultCode, data } = await runJs(serial, surface, hostPackage, code);
     if (resultCode === 0 && parsedOk(data)) return { ok: true, data };
+    if (opts.acceptSemanticFailure && resultCode === 0 && parsedResultObject(data))
+      return { ok: true, data };
+    if (surface.isNotRunning?.(resultCode, data)) {
+      if (i < attempts) {
+        lastError = `automation runtime is not attached (broadcast result=${resultCode}: ${data || '(no data)'}). ` +
+          `Relaunching ${hostPackage} before retry ${i + 1}/${attempts}.`;
+        console.warn(lastError);
+        await launchHost(serial, surface, hostPackage);
+        continue;
+      }
+      return {
+        ok: false,
+        error: `automation runtime is not attached after ${attempts} attempt(s). ` +
+          `The ${hostPackage} activity is not alive when JS automation is sent. ` +
+          `Last receiver response: result=${resultCode}, data=${data || '(empty)'}`,
+      };
+    }
     if (data && data.startsWith('ERROR')) return { ok: false, error: data }; // definitive
-    lastError = data || '(empty result / broadcast timed out — service still binding?)';
+    lastError = resultCode === 0
+      ? (data || '(empty result / broadcast timed out — service still binding?)')
+      : `broadcast result=${resultCode}, data=${data || '(empty)'}`;
     if (i < attempts) await delay(4000); // bind likely in progress; let it finish, then retry
   }
   return { ok: false, error: lastError };
@@ -508,7 +538,7 @@ async function startActivity(serial, hostPackage) {
     ]);
     const comp = stdout.trim().split('\n').pop().trim(); // "pkg/.Activity"
     if (comp.includes('/')) {
-      await adb(serial, ['shell', 'am', 'start', '-n', comp]);
+      await adb(serial, ['shell', 'am', 'start', '-W', '-n', comp]);
       return;
     }
   } catch { /* fall back to monkey below */ }
@@ -532,6 +562,23 @@ async function stopApps(serial, c, hostPackage) {
   }
 }
 
+async function automationTargetDetails(serial, hostPackage) {
+  const parts = [];
+  try {
+    const { stdout } = await adb(serial, ['shell', `pidof ${hostPackage} || true`]);
+    parts.push(`pid=${stdout.trim() || 'none'}`);
+  } catch { /* best-effort diagnostics */ }
+  try {
+    const { stdout } = await adb(serial, [
+      'shell',
+      "dumpsys activity activities | grep -E 'mResumedActivity|topResumedActivity|mFocusedWindow' | head -5",
+    ]);
+    const activity = stdout.trim().replace(/\s+/g, ' ');
+    if (activity) parts.push(`activity=${activity.slice(0, 240)}`);
+  } catch { /* best-effort diagnostics */ }
+  return parts.join('; ');
+}
+
 /** Parse a result payload (possibly double-encoded) and report a boolean member. */
 function flag(data, key) {
   try {
@@ -551,6 +598,16 @@ function parsedOk(data) {
     return v && v.ok === true;
   } catch {
     return false; // e.g. "ERROR: ..." strings from the native facade
+  }
+}
+
+function parsedResultObject(data) {
+  try {
+    let v = JSON.parse(data);
+    if (typeof v === 'string') v = JSON.parse(v);
+    return v && typeof v === 'object' && !Array.isArray(v);
+  } catch {
+    return false;
   }
 }
 
