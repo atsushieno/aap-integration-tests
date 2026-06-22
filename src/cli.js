@@ -18,23 +18,27 @@ import { defaultSuiteName, listSuites, loadSuite } from './suite.js';
 
 async function main() {
   const argv = yargs(hideBin(process.argv))
-    .option('case', { type: 'string', describe: 'test case under tests/cases/ (e.g. connectivity-mda)' })
+    .option('case', { type: 'string', default: npmConfigString('case'),
+      describe: 'test case under tests/cases/ (e.g. connectivity-mda)' })
     .option('suite', { type: 'string',
+      default: npmConfigString('suite'),
       describe: `suite to run (${listSuites().join('|')}); defaults to ${defaultSuiteName} when no --case/--catalog is given` })
-    .option('catalog', { type: 'string', describe: 'catalog name; defaults to the case\'s catalog' })
-    .option('device', { type: 'string', default: 'auto', choices: ['auto', 'local', 'gmd', 'firebase'],
+    .option('catalog', { type: 'string', default: npmConfigString('catalog'),
+      describe: 'catalog name; defaults to the case\'s catalog' })
+    .option('device', { type: 'string', default: npmConfigString('device') ?? 'auto', choices: ['auto', 'local', 'gmd', 'firebase'],
       describe: 'auto = existing target -> Firebase (if there) -> GMD' })
-    .option('serial', { type: 'string', describe: 'adb serial (local/auto provider)' })
+    .option('serial', { type: 'string', default: npmConfigString('serial'),
+      describe: 'adb serial (local/auto provider)' })
     .option('token', { type: 'string',
       describe: 'GitHub PAT (artifact-read) for downloads; defaults to $GITHUB_TOKEN. Do not commit it.' })
-    .option('host-apk', { type: 'string',
+    .option('host-apk', { type: 'string', default: npmConfigString('host-apk'),
       describe: 'path to a locally-built host APK (with the JS controller) to install before running; ' +
         'transitional until plugin APKs ship compose-app+controller and self-host' })
-    .option('reinstall', { type: 'boolean', default: false,
+    .option('reinstall', { type: 'boolean', default: npmConfigBoolean('reinstall'),
       describe: 'force reinstall every package (default: skip if already installed)' })
-    .option('skip-acquire', { type: 'boolean', default: false,
+    .option('skip-acquire', { type: 'boolean', default: npmConfigBoolean('skip-acquire'),
       describe: 'skip downloading APKs (run against what is already installed)' })
-    .option('skip-install', { type: 'boolean', default: false,
+    .option('skip-install', { type: 'boolean', default: npmConfigBoolean('skip-install'),
       describe: 'skip adb install entirely' })
     .check((a) => {
       if (a.case && a.suite) throw new Error('Pass either --case or --suite, not both.');
@@ -221,6 +225,20 @@ function formatRefs(refs) {
 
 function unique(values) {
   return [...new Set(values)];
+}
+
+function npmConfigString(name) {
+  return process.env[npmConfigEnvName(name)] || undefined;
+}
+
+function npmConfigBoolean(name) {
+  const value = process.env[npmConfigEnvName(name)];
+  if (value == null) return false;
+  return !/^(false|0|no|off)?$/i.test(value);
+}
+
+function npmConfigEnvName(name) {
+  return `npm_config_${name.replace(/-/g, '_')}`;
 }
 
 async function resetDownloadedApks() {

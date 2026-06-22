@@ -10,17 +10,19 @@ README is just an entry map; the architecture doc is the source of truth.
 > wired, but green runs still depend on Android device stability and fresh
 > cross-repository artifact pins.
 
-## What it does (target)
+## What it does
 
 1. Read a named **setup catalog** (`catalogs/<name>.json`) — a flat list of
    `{ repo, commit, artifacts, files? }` download entries.
 2. **Acquire** the cataloged module/plugin APKs from each commit's GitHub Actions
    artifacts (PAT-authenticated), into a working dir, cached by `repo@commit`.
-3. **Install** them on an adb-connectable device (skipping when `versionCode`
-   matches).
-4. **Run** test cases against the AAP framework API — by default as instrumented
-   tests; optionally via the embedded JS controller (`adb am broadcast`).
-5. **Verify** rendered audio against approved goldens (tolerant compare / spectrum).
+3. **Install** them on an adb-connectable device. By default an already installed
+   package is skipped; pass `--reinstall` to force `adb install -r`.
+4. **Run** test cases through the embedded JS automation surfaces (`adb am
+   broadcast`) in plugin host apps and uapmd-app.
+5. **Report** per-case pass/fail details and a final suite summary. Some helper
+   code for audio-golden verification exists, but the committed CI suite is
+   currently focused on load/inspect/project behavior.
 
 ## Layout
 
@@ -31,11 +33,10 @@ src/
   paths.js           .work/ directory layout
   catalog.js         load + validate a catalog
   acquire.js         resolve commit -> artifact -> download -> cache
-  install.js         adb install with versionCode skip
-  verify.js          golden / spectrum tolerant comparison
-  device/            device-provider seam (gmd | local | firebase)
+  install.js         adb install, skipping installed packages unless forced
+  verify.js          golden / spectrum tolerant comparison helpers
+  device/            device providers (gmd | local | firebase)
 tests/cases/         test-case definitions
-android-tests/       (later) Gradle instrumented-test project
 .work/               working dir — NOT committed; Actions-cached
 ```
 
@@ -52,6 +53,13 @@ npm test -- --device auto
 # If the APKs are already installed on a connected device/emulator:
 npm test -- --device auto --skip-acquire --skip-install
 
+# Force reinstall staged/downloaded APKs, useful when a device has an outdated
+# package with the same package name already installed:
+npm test -- --device gmd --reinstall
+
+# npm's config-style form is also accepted for runner options:
+npm run test --reinstall --device=gmd
+
 # No device: download APKs and bring up an emulator (GMD).
 export GITHUB_TOKEN=<PAT with artifact-read scope>
 npm test -- --device gmd
@@ -59,23 +67,24 @@ npm test -- --device gmd
 
 Key options: `--token` (PAT; or `$GITHUB_TOKEN`), `--device auto|local|gmd|firebase`,
 `--serial`, `--suite ci|all`, `--skip-acquire` / `--skip-install`, `--reinstall`,
-`--host-apk`. Requires `adb` (and the Android SDK emulator for `gmd`).
+`--host-apk`. Requires `adb`, `aapt`/`aapt2`, and the Android SDK emulator for
+`gmd`.
 
 For single-case debugging, keep using `--case`:
 
 ```sh
 npm test -- --case connectivity-mda --catalog mda-ci --device auto
+npm run test --case=connectivity-mda --catalog=mda-ci --device=auto
 ```
 
 ## CI (GitHub Actions)
 
-- **`unit-tests`** — fast host-runner logic tests (`npm run unit`); every push/PR; no
-  device or secrets.
 - **`integration-tests`** — downloads host + plugin APKs by commit from GitHub
-  Actions artifacts, boots an emulator (`reactivecircus/android-emulator-runner`),
-  installs, and runs the default integration suite (`npm test -- --device auto`).
-  It uses API 35 because uapmd's Android app requires API 31+. Manual + nightly
-  + on `main`.
+  Actions artifacts, first runs `npm run unit` as a fast Node preflight, then
+  boots an emulator (`reactivecircus/android-emulator-runner`), installs APKs,
+  and runs the default integration suite (`npm test -- --device auto`). It uses
+  API 35 because uapmd's Android app requires API 31+. Manual + nightly + on
+  `main`.
 
   **Prerequisites before it goes green:**
   1. Secret **`AAP_ARTIFACTS_PAT`** — a PAT with artifact-read access to every
