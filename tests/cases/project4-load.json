@@ -4,13 +4,10 @@
   "catalog": "project4-ci",
   "hostPackage": "dev.atsushieno.uapmd",
   "projectFile": "tests/cases/project4.uapmdz",
-  "_expected_note": "Every plugin instance referenced by project4.uapmdz; the test fails if any is not instantiated on load.",
-  "expectedPlugins": [
-    "lv2:http://drobilla.net/plugins/mda/JX10",
-    "juceaap:44657864",
-    "juceaap:socalabs-wavetable",
-    "lv2:http://drobilla.net/plugins/mda/EPiano",
-    "lv2:http://drobilla.net/plugins/mda/DX10",
-    "lv2:http://drobilla.net/plugins/mda/Piano"
-  ]
+  "pluginPackages": [
+    "org.androidaudioplugin.ports.lv2.mda",
+    "org.androidaudioplugin.ports.juce.dexed",
+    "org.androidaudioplugin.ports.juce.wavetable"
+  ],
+  "_expected_note": "Expected plugin instances are parsed from project4.uapmdz graph files at runtime; the test fails if any referenced plugin is not instantiated on load."
 }

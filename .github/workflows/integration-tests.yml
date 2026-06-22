@@ -1,15 +1,15 @@
 name: integration-tests
 
 # Cross-repo AAP integration tests: download prebuilt host + plugin APKs by commit
-# from GitHub Actions artifacts, install on a CI emulator, run connectivity.
+# from GitHub Actions artifacts, install on a CI emulator, run the default suite.
 #
 # PREREQUISITES before this can go green:
 #   1. Repository secret AAP_ARTIFACTS_PAT — a GitHub PAT with artifact-read access
-#      to the source repos (atsushieno/aap-core, atsushieno/aap-lv2-mda). The
-#      default GITHUB_TOKEN cannot read other repositories' Actions artifacts.
-#   2. catalogs/mda-ci.json — pin the aap-core entry to a green commit whose
-#      aaphostsample bundles the current js-controller (connect step + threading
-#      fix). Until then `acquire` fails with a clear "no successful run" error.
+#      to all source repos named by catalogs/*.json. The default GITHUB_TOKEN
+#      cannot read other repositories' Actions artifacts.
+#   2. The catalog pins must point to commits whose artifacts still exist or
+#      are already present in this repo's .work/cache. If not, `acquire` fails
+#      with a clear "no successful run" / "artifact not available" error.
 #
 # Emulator: provided by reactivecircus/android-emulator-runner (handles KVM, image
 # install, boot, caching). Our own `gmd` device provider is the local no-device
@@ -29,7 +29,7 @@ on:
       - '.github/workflows/integration-tests.yml'
 
 jobs:
-  connectivity:
+  suite:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
             ~/.android/adb*
           key: avd-api30-google_apis-x86_64
 
-      - name: Run connectivity on emulator
+      - name: Run integration suite on emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 30
@@ -70,9 +70,9 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -no-snapshot -no-audio -no-boot-anim -gpu swiftshader_indirect -camera-back none
           disable-animations: true
-          # The emulator is up here; `--device auto` reuses it. The mda-ci catalog
-          # downloads host + plugin from artifacts (PAT via GITHUB_TOKEN below).
-          script: node src/cli.js --case connectivity-mda --catalog mda-ci --device auto
+          # The emulator is up here; `--device auto` reuses it. The default suite
+          # downloads every catalog it needs from artifacts (PAT via GITHUB_TOKEN below).
+          script: npm test -- --device auto
         env:
           # acquire.js reads GITHUB_TOKEN; this PAT can read cross-repo artifacts.
           GITHUB_TOKEN: ${{ secrets.AAP_ARTIFACTS_PAT }}

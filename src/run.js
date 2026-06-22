@@ -10,6 +10,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
 import { repoRoot } from './paths.js';
+import { readUapmdProjectPluginReferences } from './uapmd-project.js';
 
 const run = promisify(execFile);
 
@@ -36,8 +37,8 @@ const SURFACES = {
 
 /**
  * @param {string|undefined} serial
- * @param {{ hostPackage:string, plugins:string[], frameCount?:number,
- *           sampleRate?:number, blocks?:number }} c
+ * @param {{ hostPackage:string, plugins:string[], pluginPackages?:string[],
+ *           stopPackages?:string[], frameCount?:number, sampleRate?:number, blocks?:number }} c
  * @returns {Promise<{plugin:string, ok:boolean, data?:string, error?:string}[]>}
  */
 export async function runConnectivity(serial, c) {
@@ -45,6 +46,7 @@ export async function runConnectivity(serial, c) {
   const sampleRate = c.sampleRate ?? 48000;
   const blocks = c.blocks ?? 10;
 
+  await stopApps(serial, c, c.hostPackage);
   await launchHost(serial, SURFACES.aap, c.hostPackage);
 
   const results = [];
@@ -67,8 +69,8 @@ export async function runConnectivity(serial, c) {
  * logcat, run, settle, then scan logcat for a native abort of the plugin's service package(s).
  *
  * @param {string|undefined} serial
- * @param {{ hostPackage:string, plugins:string[], pluginPackages?:string[], presetIndices?:number[],
- *           frameCount?:number, sampleRate?:number, settleMs?:number }} c
+ * @param {{ hostPackage:string, plugins:string[], pluginPackages?:string[], stopPackages?:string[],
+ *           presetIndices?:number[], frameCount?:number, sampleRate?:number, settleMs?:number }} c
  */
 export async function runPreset(serial, c) {
   const frameCount = c.frameCount ?? 1024;
@@ -76,6 +78,7 @@ export async function runPreset(serial, c) {
   const settleMs = c.settleMs ?? 6000;
   const watch = c.pluginPackages ?? [];
 
+  await stopApps(serial, c, c.hostPackage);
   await launchHost(serial, SURFACES.aap, c.hostPackage);
 
   const results = [];
@@ -160,13 +163,15 @@ function presetScript(pluginId, frameCount, sampleRate, presetIndices) {
  * of those AAP extension calls returned a well-formed result and set-state(get-state) was a no-op.
  *
  * @param {string|undefined} serial
- * @param {{ hostPackage:string, plugins:string[], frameCount?:number, sampleRate?:number }} c
+ * @param {{ hostPackage:string, plugins:string[], pluginPackages?:string[], stopPackages?:string[],
+ *           frameCount?:number, sampleRate?:number }} c
  * @returns {Promise<object[]>} per-plugin {plugin, ok, ...inspection} or {plugin, ok:false, error}
  */
 export async function runInspect(serial, c) {
   const frameCount = c.frameCount ?? 1024;
   const sampleRate = c.sampleRate ?? 48000;
 
+  await stopApps(serial, c, c.hostPackage);
   await launchHost(serial, SURFACES.aap, c.hostPackage);
 
   const results = [];
@@ -192,11 +197,13 @@ export async function runInspect(serial, c) {
  * tracks came back. Exercises the uapmd sequencer/project stack on top of AAP.
  *
  * @param {string|undefined} serial
- * @param {{ hostPackage?:string, plugins?:string[], pluginFormat?:string, savePath?:string }} c
+ * @param {{ hostPackage?:string, plugins?:string[], pluginPackages?:string[], stopPackages?:string[],
+ *           pluginFormat?:string, savePath?:string }} c
  */
 export async function runUapmdProject(serial, c) {
   const surface = SURFACES.uapmd;
   const hostPackage = c.hostPackage ?? 'dev.atsushieno.uapmd';
+  await stopApps(serial, c, hostPackage);
   await launchHost(serial, surface, hostPackage);
 
   const r = await connectOnce(serial, surface, hostPackage, uapmdProjectScript(c));
@@ -218,12 +225,13 @@ export async function runUapmdProject(serial, c) {
  * non-empty pluginId in getTrackInfos(); a failed one has "".
  *
  * @param {string|undefined} serial
- * @param {{ hostPackage?:string, projectFile:string, expectedPlugins?:string[] }} c
+ * @param {{ hostPackage?:string, projectFile:string, pluginPackages?:string[], stopPackages?:string[] }} c
  */
 export async function runUapmdLoadProject(serial, c) {
   const surface = SURFACES.uapmd;
   const hostPackage = c.hostPackage ?? 'dev.atsushieno.uapmd';
-  const expected = c.expectedPlugins ?? [];
+  const expected = await readUapmdProjectPluginReferences(c.projectFile);
+  await stopApps(serial, c, hostPackage);
   await launchHost(serial, surface, hostPackage);
 
   const devicePath = await pushProjectToApp(serial, hostPackage, c.projectFile);
@@ -235,8 +243,27 @@ export async function runUapmdLoadProject(serial, c) {
   }
   const v = unwrap(r.data);
   console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-load-project — loaded ${v.loadedCount}/${expected.length}` +
-    (v.ok ? '' : ` — missing:[${v.missing}] failed:[${v.failed}] loadErr:${v.loadError ?? '-'}`));
+    (v.ok ? '' : formatProjectLoadFailure(v)));
   return [{ test: 'uapmd-load-project', ...v }];
+}
+
+function formatProjectLoadFailure(v) {
+  const missing = formatPluginRefs(v.missing);
+  const failed = formatPluginRefs(v.failed);
+  const unexpected = formatPluginRefs(v.unexpected);
+  return ` — missing:[${missing}] failed:[${failed}] unexpected:[${unexpected}] loadErr:${v.loadError ?? '-'}`;
+}
+
+function formatPluginRefs(refs) {
+  if (!Array.isArray(refs) || refs.length === 0) return '';
+  return refs.map((r) => {
+    const track = r.trackIndex === -1 ? 'master' :
+      Number.isInteger(r.trackIndex) ? `track${r.trackIndex}` : 'track?';
+    const plugin = Number.isInteger(r.pluginIndex) ? `plugin${r.pluginIndex}` :
+      Number.isInteger(r.nodeIndex) ? `node${r.nodeIndex}` : 'plugin?';
+    const name = r.displayName && r.displayName !== r.pluginId ? `${r.displayName} ` : '';
+    return `${track}/${plugin} ${name}(${r.pluginId ?? '-'})`;
+  }).join('; ');
 }
 
 /** Push a local project file into the app's private dir (run-as; debuggable app), readable by the app. */
@@ -270,21 +297,41 @@ function uapmdLoadProjectScript(devicePath, expectedPlugins) {
       for (var j = 0; j < nodes.length; j++) {
         var nd = nodes[j];
         if (!nd.isPlugin) continue;
-        if (nd.pluginId && nd.pluginId.length > 0) loaded.push(nd.pluginId);
-        else failed.push(nd.displayName || ('track' + i + '/node' + j));
+        var ref = {
+          trackIndex: i,
+          nodeIndex: j,
+          pluginIndex: j,
+          pluginId: nd.pluginId || '',
+          displayName: nd.displayName || ''
+        };
+        if (ref.pluginId.length > 0) loaded.push(ref);
+        else failed.push(ref);
       }
     }
     var expected = ${JSON.stringify(expectedPlugins)};
-    var missing = expected.filter(function(p){ return loaded.indexOf(p) < 0; });
+    var remaining = loaded.slice();
+    var missing = [];
+    for (var k = 0; k < expected.length; k++) {
+      var e = expected[k];
+      var found = -1;
+      for (var n = 0; n < remaining.length; n++) {
+        if (remaining[n].pluginId === e.pluginId) { found = n; break; }
+      }
+      if (found >= 0) remaining.splice(found, 1);
+      else missing.push(e);
+    }
     return {
-      ok: !!(load && load.success) && failed.length === 0 && missing.length === 0,
+      ok: !!(load && load.success) && failed.length === 0 && missing.length === 0 && remaining.length === 0,
       loadedOk: !!(load && load.success),
       loadError: load && load.error,
       loadedCount: loaded.length,
       loaded: loaded,
       failedCount: failed.length,
       failed: failed,
-      missing: missing
+      expectedCount: expected.length,
+      expected: expected,
+      missing: missing,
+      unexpected: remaining
     };
   })()`;
 }
@@ -472,6 +519,19 @@ async function startActivity(serial, hostPackage) {
   }
 }
 
+async function stopApps(serial, c, hostPackage) {
+  const packages = unique([hostPackage, ...(c.pluginPackages ?? []), ...(c.stopPackages ?? [])]
+    .filter((p) => typeof p === 'string' && p.length > 0));
+  for (const pkg of packages) {
+    try {
+      await adb(serial, ['shell', 'am', 'force-stop', pkg]);
+      console.log(`force-stop ${pkg}`);
+    } catch (e) {
+      console.warn(`force-stop warning for ${pkg}: ${String(e.message ?? e).split('\n')[0]}`);
+    }
+  }
+}
+
 /** Parse a result payload (possibly double-encoded) and report a boolean member. */
 function flag(data, key) {
   try {
@@ -496,5 +556,8 @@ function parsedOk(data) {
 
 function adb(serial, args) {
   return run('adb', serial ? ['-s', serial, ...args] : args);
+}
+function unique(values) {
+  return [...new Set(values)];
 }
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));

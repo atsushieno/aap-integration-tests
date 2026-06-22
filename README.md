@@ -6,8 +6,9 @@ ecosystem. No other repo runs these tests.
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full design and rationale. This
 README is just an entry map; the architecture doc is the source of truth.
 
-> **Status: early scaffold (DRAFT).** Most of `src/` is honest stubs marking
-> intended responsibilities. Nothing is wired into CI yet.
+> **Status: early integration harness.** The CLI and GitHub Actions workflow are
+> wired, but green runs still depend on Android device stability and fresh
+> cross-repository artifact pins.
 
 ## What it does (target)
 
@@ -46,14 +47,14 @@ npm install
 # Run the integration matrix with one command.
 # Downloads catalog APKs, installs them once, then runs every committed CI case.
 export GITHUB_TOKEN=<PAT with artifact-read scope>
-npm run integration -- --device auto
+npm test -- --device auto
 
 # If the APKs are already installed on a connected device/emulator:
-npm run integration -- --device auto --skip-acquire --skip-install
+npm test -- --device auto --skip-acquire --skip-install
 
 # No device: download APKs and bring up an emulator (GMD).
 export GITHUB_TOKEN=<PAT with artifact-read scope>
-npm run integration -- --device gmd
+npm test -- --device gmd
 ```
 
 Key options: `--token` (PAT; or `$GITHUB_TOKEN`), `--device auto|local|gmd|firebase`,
@@ -63,23 +64,24 @@ Key options: `--token` (PAT; or `$GITHUB_TOKEN`), `--device auto|local|gmd|fireb
 For single-case debugging, keep using `--case`:
 
 ```sh
-npm run integration -- --case connectivity-mda --catalog mda-ci --device auto
+npm test -- --case connectivity-mda --catalog mda-ci --device auto
 ```
 
 ## CI (GitHub Actions)
 
-- **`unit-tests`** — fast host-runner logic tests (`npm test`); every push/PR; no
+- **`unit-tests`** — fast host-runner logic tests (`npm run unit`); every push/PR; no
   device or secrets.
 - **`integration-tests`** — downloads host + plugin APKs by commit from GitHub
   Actions artifacts, boots an emulator (`reactivecircus/android-emulator-runner`),
-  installs, runs connectivity. Manual + nightly + on `main`.
+  installs, and runs the default integration suite (`npm test -- --device auto`).
+  Manual + nightly + on `main`.
 
   **Prerequisites before it goes green:**
-  1. Secret **`AAP_ARTIFACTS_PAT`** — a PAT with artifact-read access to the
-     source repos (default `GITHUB_TOKEN` can't read other repos' artifacts).
-  2. **`catalogs/mda-ci.json`** — pin the `aap-core` entry to a green commit whose
-     `aaphostsample` bundles the current js-controller (connect step + threading
-     fix). Until then `acquire` fails with a clear "no successful run" error.
+  1. Secret **`AAP_ARTIFACTS_PAT`** — a PAT with artifact-read access to every
+     source repo named by `catalogs/*.json` (default `GITHUB_TOKEN` can't read
+     other repos' artifacts).
+  2. Catalog pins whose GitHub Actions artifacts still exist, or cached copies in
+     `.work/cache`. Otherwise `acquire` fails with a clear artifact error.
 
 ## uapmd-based testing
 

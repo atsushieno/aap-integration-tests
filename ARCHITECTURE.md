@@ -52,7 +52,7 @@ value — not a dependable regression gate yet.
 | On-device path **(B)** JS controller over `adb am broadcast` — all current cases use this | exists | works for aap cases; uapmd surface deadlocks (fix pending) |
 | Case types: `connectivity`, `inspect`, `preset` | exist | pass *now*, after framework fixes |
 | Case types: `uapmd-project`, `uapmd-load-project` | exist | **never passed** (uapmd deadlock; fix unverified) |
-| CI: `integration-tests.yml` (emulator + `connectivity-mda`), `unit-tests.yml` | exist | **never validated on a hosted runner** |
+| CI: `integration-tests.yml` (emulator + default suite), `unit-tests.yml` | exist | **never validated on a hosted runner** |
 | On-device path **(A)** instrumented tests | — | planned, not built |
 | Offline renderer (`aap.render.*`) + golden WAV verification (`verify.js`) | scaffold only | **no case uses it** |
 
@@ -475,9 +475,11 @@ uploaded run artifact) even if the cache entry is evicted.
   emulator. This differs from the original "our own GMD at build time" plan; our
   `gmd` provider is the *local* fallback and is **unvalidated on hosted runners**.
   **This CI path has never been confirmed green** — see the stability caveat.
-- **Only `connectivity-mda` is wired into CI.** The other four cases pass (or, for
-  uapmd, fail) only via ad-hoc local runs; none are gated yet. Wiring all five in
-  is pending (and blocked on the uapmd fix actually landing).
+- **The default suite is wired into CI.** `integration-tests.yml` runs
+  `npm test -- --device auto`, so CI attempts the same case matrix as a local
+  one-command run. This is intentionally factual, not aspirational: if uapmd
+  cases still fail or plugins are dropped, the workflow should report that
+  failure rather than hiding it behind a connectivity-only subset.
 - **Working dir persisted via Actions cache** (downloads, `repo@commit` cache,
   goldens) — keyed so it is reproducible/traceable (§5 principle 5, §7).
 - **PAT** with artifact-read scope is required for downloads (§7), supplied as the
@@ -527,8 +529,7 @@ open:
 1. **Make the uapmd cases pass** — land + verify the uapmd app-thread deadlock fix
    (instancing/save/load), then confirm `uapmd-project` and `project4-load` green.
 2. **Make CI trustworthy** — actually run the workflow on a hosted runner and
-   confirm the emulator path works; then wire all five cases in (gating once the
-   uapmd ones pass).
+   confirm the emulator path works with the full default suite.
 3. **Real audio verification** — build the offline `aap.render.*` renderer (§9) and
    the golden capture/approval + tolerant comparison (§10); only then is this more
    than a smoke/operation gate.

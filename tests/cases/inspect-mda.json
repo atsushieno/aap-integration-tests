@@ -8,6 +8,9 @@
     "lv2:http://drobilla.net/plugins/mda/DX10",
     "lv2:http://drobilla.net/plugins/mda/Overdrive"
   ],
+  "pluginPackages": [
+    "org.androidaudioplugin.ports.lv2.mda"
+  ],
   "frameCount": 1024,
   "sampleRate": 48000
 }

@@ -8,5 +8,8 @@
   "plugins": [
     "lv2:http://drobilla.net/plugins/mda/DX10",
     "lv2:http://drobilla.net/plugins/mda/Overdrive"
+  ],
+  "pluginPackages": [
+    "org.androidaudioplugin.ports.lv2.mda"
   ]
 }
