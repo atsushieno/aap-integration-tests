@@ -1,0 +1,23 @@
+{
+  "_comment": "UAPMD + BYOD + Dexed GUI routing regression catalog. Local .work/local overrides are expected for validating in-flight aap-core/uapmd/aap-juce changes.",
+  "name": "uapmd-byod-dexed-ci",
+  "entries": [
+    {
+      "repo": "atsushieno/uapmd",
+      "commit": "070d15e49dc3b6a344ffd85b31b50c6910b5ab52",
+      "artifacts": ["uapmd-android-apk"]
+    },
+    {
+      "repo": "atsushieno/aap-juce-byod",
+      "commit": "04eca39ff088a450c08c3af42ac33c5bb5335f1a",
+      "artifacts": ["dist"],
+      "files": { "BYOD-debug.apk": "aap-juce-byod.apk" }
+    },
+    {
+      "repo": "atsushieno/aap-juce-dexed",
+      "commit": "90b297c5dcde7160081a93d094e49e3db647edc8",
+      "artifacts": ["dist"],
+      "files": { "Dexed-debug.apk": "aap-juce-dexed.apk" }
+    }
+  ]
+}

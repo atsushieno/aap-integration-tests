@@ -1,0 +1,15 @@
+{
+  "name": "uapmd-aap-ui-routing-byod-dexed",
+  "type": "uapmd-aap-ui-routing",
+  "catalog": "uapmd-byod-dexed-ci",
+  "hostPackage": "dev.atsushieno.uapmd",
+  "pluginFormat": "AAP",
+  "dexedPlugin": "juceaap:44657864",
+  "byodPlugin": "juceaap:44717530",
+  "targetPlugin": "juceaap:44717530",
+  "pluginPackages": [
+    "org.androidaudioplugin.ports.juce.dexed",
+    "org.androidaudioplugin.ports.juce.byod"
+  ],
+  "settleMs": 5000
+}

@@ -1,0 +1,21 @@
+{
+  "name": "byod-preset-output",
+  "type": "byod-preset-output",
+  "catalog": "byod-ci",
+  "hostPackage": "org.androidaudioplugin.aaphostsample",
+  "plugins": [
+    "juceaap:44717530"
+  ],
+  "pluginPackages": [
+    "org.androidaudioplugin.ports.juce.byod"
+  ],
+  "frameCount": 512,
+  "sampleRate": 48000,
+  "blocks": 16,
+  "warmupBlocks": 4,
+  "presetName": "Tube Screamer",
+  "amplitude": 0.2,
+  "outputTolerance": 0.000001,
+  "parameterTolerance": 0.000001,
+  "settleAfterPresetMs": 75
+}

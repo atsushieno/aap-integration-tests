@@ -12,7 +12,7 @@ import { loadCatalog } from './catalog.js';
 import { acquire } from './acquire.js';
 import { installAll } from './install.js';
 import { acquireDevice } from './device/index.js';
-import { runConnectivity, runInspect, runPreset, runUapmdProject, runUapmdLoadProject } from './run.js';
+import { runByodPresetOutput, runConnectivity, runInspect, runPreset, runUapmdAapUiRouting, runUapmdProject, runUapmdLoadProject } from './run.js';
 import { paths, repoRoot } from './paths.js';
 import { defaultSuiteName, listSuites, loadSuite } from './suite.js';
 
@@ -158,6 +158,12 @@ async function runCase(serial, c) {
       console.log(`preset: ${results.length - failed.length}/${results.length} passed`);
       return caseResult(failed);
     }
+    case 'byod-preset-output': {
+      const results = await runByodPresetOutput(serial, c);
+      const failed = results.filter((r) => !r.ok);
+      console.log(`byod-preset-output: ${results.length - failed.length}/${results.length} passed`);
+      return caseResult(failed);
+    }
     case 'uapmd-project': {
       const results = await runUapmdProject(serial, c);
       const failed = results.filter((r) => !r.ok);
@@ -168,6 +174,12 @@ async function runCase(serial, c) {
       const results = await runUapmdLoadProject(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`uapmd-load-project: ${results.length - failed.length}/${results.length} passed`);
+      return caseResult(failed);
+    }
+    case 'uapmd-aap-ui-routing': {
+      const results = await runUapmdAapUiRouting(serial, c);
+      const failed = results.filter((r) => !r.ok);
+      console.log(`uapmd-aap-ui-routing: ${results.length - failed.length}/${results.length} passed`);
       return caseResult(failed);
     }
     // TODO: 'render' case type -> our offline renderer + verify.js golden compare.

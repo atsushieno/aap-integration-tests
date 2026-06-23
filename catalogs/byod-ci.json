@@ -1,0 +1,18 @@
+{
+  "_comment": "BYOD preset-output regression catalog. Local .work/local/aap-juce-byod.apk overrides this downloaded artifact when testing local aap-core/aap-juce fixes.",
+  "name": "byod-ci",
+  "entries": [
+    {
+      "repo": "atsushieno/aap-core",
+      "commit": "8fcf4fb8266212c5748c08c485ed0819184e0a8b",
+      "artifacts": ["aap-core-apps-and-libs"],
+      "files": { "samples/aaphostsample/build/outputs/apk/debug/aaphostsample-debug.apk": "aaphostsample.apk" }
+    },
+    {
+      "repo": "atsushieno/aap-juce-byod",
+      "commit": "04eca39ff088a450c08c3af42ac33c5bb5335f1a",
+      "artifacts": ["dist"],
+      "files": { "BYOD-debug.apk": "aap-juce-byod.apk" }
+    }
+  ]
+}

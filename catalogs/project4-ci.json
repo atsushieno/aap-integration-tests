@@ -15,7 +15,7 @@
     },
     {
       "repo": "atsushieno/aap-juce-dexed",
-      "commit": "cdf793ce1de0f4d3853e86c2eacab97e0e989050",
+      "commit": "90b297c5dcde7160081a93d094e49e3db647edc8",
       "artifacts": ["dist"],
       "files": { "Dexed-debug.apk": "aap-juce-dexed.apk" }
     },

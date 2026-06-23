@@ -5,6 +5,8 @@ const suites = {
     { case: 'connectivity-mda', catalog: 'mda-ci' },
     { case: 'inspect-mda', catalog: 'mda-ci' },
     { case: 'wavetable-preset', catalog: 'wavetable-ci' },
+    { case: 'byod-preset-output', catalog: 'byod-ci' },
+    { case: 'uapmd-aap-ui-routing-byod-dexed', catalog: 'uapmd-byod-dexed-ci' },
     { case: 'uapmd-project-mda', catalog: 'uapmd-ci' },
     { case: 'project4-load', catalog: 'project4-ci' },
   ],

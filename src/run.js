@@ -110,6 +110,232 @@ export async function runPreset(serial, c) {
   return results;
 }
 
+/**
+ * BYOD regression: selecting a preset while the plugin is ACTIVE must produce the same rendered
+ * output as selecting that preset while INACTIVE before activation.
+ *
+ * @param {string|undefined} serial
+ * @param {{ hostPackage:string, plugins:string[], pluginPackages?:string[], stopPackages?:string[],
+ *           presetIndex?:number, presetName?:string, frameCount?:number, sampleRate?:number,
+ *           blocks?:number, warmupBlocks?:number, amplitude?:number, outputTolerance?:number,
+ *           parameterTolerance?:number, settleAfterPresetMs?:number, settleMs?:number }} c
+ */
+export async function runByodPresetOutput(serial, c) {
+  const frameCount = c.frameCount ?? 512;
+  const sampleRate = c.sampleRate ?? 48000;
+  const blocks = c.blocks ?? 16;
+  const warmupBlocks = c.warmupBlocks ?? 4;
+  const presetIndex = c.presetIndex ?? null;
+  const presetName = c.presetName ?? null;
+  const amplitude = c.amplitude ?? 0.2;
+  const outputTolerance = c.outputTolerance ?? c.tolerance ?? 1e-6;
+  const parameterTolerance = c.parameterTolerance ?? 1e-6;
+  const settleAfterPresetMs = c.settleAfterPresetMs ?? 75;
+  const settleMs = c.settleMs ?? 3000;
+  const watch = c.pluginPackages ?? [];
+
+  await stopApps(serial, c, c.hostPackage);
+  await launchHost(serial, SURFACES.aap, c.hostPackage);
+
+  const results = [];
+  for (const plugin of c.plugins) {
+    await adb(serial, ['logcat', '-c']).catch(() => {});
+    const r = await connectOnce(serial, SURFACES.aap, c.hostPackage,
+      byodPresetOutputScript(plugin, presetIndex, presetName, frameCount, sampleRate,
+        warmupBlocks, blocks, amplitude, outputTolerance, parameterTolerance, settleAfterPresetMs),
+      4,
+      { broadcastTimeoutMs: 120_000, acceptSemanticFailure: true });
+    await delay(settleMs);
+    const crash = await detectServiceCrash(serial, watch);
+    if (!r.ok || crash) {
+      const err = crash ? `plugin service crashed: ${crash}` : r.error;
+      results.push({ plugin, ok: false, error: err });
+      console.log(`FAIL byod-preset-output ${plugin} — ${err}`);
+      continue;
+    }
+    const v = unwrap(r.data);
+    const ok = !!v.ok;
+    results.push({ plugin, ...v });
+    console.log(`${ok ? 'PASS' : 'FAIL'} byod-preset-output ${plugin} — ` +
+      `preset:${v.presetIndex}:${v.presetName} params:${v.parameterMismatches?.length ?? '?'} ` +
+      `blocks:${v.outputMismatches?.length ?? '?'} paramChanged:${v.parametersChangedFromDefault} ` +
+      `outputChanged:${v.outputChangedFromDefault} ` +
+      `inactiveRms:${v.inactive?.totalRms} activeRms:${v.active?.totalRms}`);
+  }
+  return results;
+}
+
+function byodPresetOutputScript(pluginId, presetIndex, presetName, frameCount, sampleRate,
+                                warmupBlocks, blocks, amplitude, outputTolerance,
+                                parameterTolerance, settleAfterPresetMs) {
+  const pid = JSON.stringify(pluginId);
+  const requestedName = presetName == null ? 'null' : JSON.stringify(presetName);
+  const requestedIndex = presetIndex == null ? 'null' : JSON.stringify(presetIndex);
+  return `(function(){
+    function presetList(inst) {
+      var pc = inst.getPresetCount();
+      var presets = [];
+      for (var i = 0; i < pc; i++)
+        presets.push({ index: i, name: inst.getPresetName(i) });
+      return presets;
+    }
+    function choosePreset(presets) {
+      var requestedIndex = ${requestedIndex};
+      var requestedName = ${requestedName};
+      if (requestedIndex !== null && requestedIndex >= 0 && requestedIndex < presets.length)
+        return presets[requestedIndex];
+      if (requestedName !== null) {
+        for (var i = 0; i < presets.length; i++)
+          if (presets[i].name === requestedName)
+            return presets[i];
+        throw new Error('Preset not found: ' + requestedName + ' available=' + JSON.stringify(presets));
+      }
+      for (var i = 0; i < presets.length; i++) {
+        var name = String(presets[i].name || '').toLowerCase();
+        if (i !== 0 && name !== 'default')
+          return presets[i];
+      }
+      throw new Error('No non-default preset found: ' + JSON.stringify(presets));
+    }
+    function summarize(stats) {
+      var totalRms = 0, totalAbs = 0, maxAbs = 0, hash = '';
+      for (var i = 0; i < stats.length; i++) {
+        totalRms += stats[i].rms || 0;
+        totalAbs += stats[i].sumAbs || 0;
+        maxAbs = Math.max(maxAbs, stats[i].maxAbs || 0);
+        hash += String(stats[i].hash) + ':';
+      }
+      return { ports: stats.length, totalRms: totalRms, totalAbs: totalAbs, maxAbs: maxAbs, hash: hash, stats: stats };
+    }
+    function collectParameterValues(inst) {
+      var values = [];
+      var count = inst.getParameterCount();
+      for (var i = 0; i < count; i++)
+        values.push(inst.getParameterValue(i));
+      return values;
+    }
+    function blockFingerprint(blocks) {
+      var hash = '';
+      var totalRms = 0, totalAbs = 0, maxAbs = 0, ports = 0;
+      for (var i = 0; i < blocks.length; i++) {
+        hash += blocks[i].hash + '|';
+        totalRms += blocks[i].totalRms;
+        totalAbs += blocks[i].totalAbs;
+        maxAbs = Math.max(maxAbs, blocks[i].maxAbs);
+        ports = Math.max(ports, blocks[i].ports);
+      }
+      return { ports: ports, totalRms: totalRms, totalAbs: totalAbs, maxAbs: maxAbs, hash: hash, blocks: blocks };
+    }
+    function render(mode, selectedPreset) {
+      var inst = aap.instancing.create(${pid});
+      var presets = presetList(inst);
+      inst.prepare(${frameCount}, ${sampleRate});
+      if (mode === 'inactive') {
+        inst.setPreset(selectedPreset.index);
+        inst.sleepMs(${settleAfterPresetMs});
+        inst.activate();
+      } else if (mode === 'active') {
+        inst.activate();
+        inst.setPreset(selectedPreset.index);
+        inst.sleepMs(${settleAfterPresetMs});
+      } else {
+        inst.activate();
+      }
+      for (var w = 0; w < ${warmupBlocks}; w++) {
+        inst.fillAudioInputs(100000 + w * 101, ${amplitude});
+        inst.process(${frameCount});
+      }
+      var parameterValues = collectParameterValues(inst);
+      var renderedBlocks = [];
+      for (var b = 0; b < ${blocks}; b++) {
+        inst.fillAudioInputs(b * 101, ${amplitude});
+        inst.process(${frameCount});
+        renderedBlocks.push(summarize(inst.getAudioOutputStats()));
+      }
+      inst.deactivate();
+      inst.destroy();
+      return {
+        mode: mode,
+        presets: presets,
+        parameterValues: parameterValues,
+        output: blockFingerprint(renderedBlocks)
+      };
+    }
+    function compareParameters(expected, actual, tolerance) {
+      var mismatches = [];
+      var count = Math.max(expected.length, actual.length);
+      for (var i = 0; i < count; i++) {
+        var e = expected[i], a = actual[i];
+        var diff = Math.abs((a || 0) - (e || 0));
+        if (e === undefined || a === undefined || diff > tolerance)
+          mismatches.push({ index: i, expected: e, actual: a, diff: diff });
+      }
+      return mismatches;
+    }
+    function compareOutputs(expected, actual, tolerance) {
+      var mismatches = [];
+      if (expected.ports !== actual.ports)
+        mismatches.push({ block: -1, reason: 'port-count', expected: expected.ports, actual: actual.ports });
+      var count = Math.max(expected.blocks.length, actual.blocks.length);
+      for (var i = 0; i < count; i++) {
+        var e = expected.blocks[i], a = actual.blocks[i];
+        if (!e || !a) {
+          mismatches.push({ block: i, reason: 'missing-block', expected: !!e, actual: !!a });
+          continue;
+        }
+        var relRms = Math.abs(a.totalRms - e.totalRms) / Math.max(1e-12, e.totalRms);
+        if (a.hash !== e.hash || relRms > tolerance)
+          mismatches.push({ block: i, expectedHash: e.hash, actualHash: a.hash,
+                            expectedRms: e.totalRms, actualRms: a.totalRms, relativeRmsDiff: relRms });
+      }
+      return mismatches;
+    }
+    var probe = aap.instancing.create(${pid});
+    var presets = presetList(probe);
+    var selectedPreset = choosePreset(presets);
+    probe.destroy();
+
+    var defaultRender = render('default', selectedPreset);
+    var inactive = render('inactive', selectedPreset);
+    var active = render('active', selectedPreset);
+    var parameterMismatches = compareParameters(inactive.parameterValues, active.parameterValues, ${parameterTolerance});
+    var outputMismatches = compareOutputs(inactive.output, active.output, ${outputTolerance});
+    var defaultParameterDiffs = compareParameters(defaultRender.parameterValues, inactive.parameterValues, ${parameterTolerance});
+    var parametersChangedFromDefault = defaultParameterDiffs.length > 0;
+    var outputChangedFromDefault = defaultRender.output.hash !== inactive.output.hash;
+    var presetChangedFromDefault = parametersChangedFromDefault && outputChangedFromDefault;
+    var activeNonSilent = active.output.totalAbs > 1e-6 && active.output.maxAbs > 1e-7;
+    var ok = inactive.output.ports > 0 &&
+             activeNonSilent &&
+             presetChangedFromDefault &&
+             parameterMismatches.length === 0 &&
+             outputMismatches.length === 0;
+    return {
+      ok: ok,
+      pluginId: ${pid},
+      presetIndex: selectedPreset.index,
+      presetName: selectedPreset.name,
+      presetCount: presets.length,
+      presets: presets,
+      default: defaultRender.output,
+      inactive: inactive.output,
+      active: active.output,
+      expectedParameterValues: inactive.parameterValues,
+      activeParameterValues: active.parameterValues,
+      parameterMismatches: parameterMismatches,
+      outputMismatches: outputMismatches,
+      defaultParameterDiffs: defaultParameterDiffs,
+      defaultParameterDiffCount: defaultParameterDiffs.length,
+      parametersChangedFromDefault: parametersChangedFromDefault,
+      outputChangedFromDefault: outputChangedFromDefault,
+      presetChangedFromDefault: presetChangedFromDefault,
+      activeNonSilent: activeNonSilent,
+      outputTolerance: ${outputTolerance},
+      parameterTolerance: ${parameterTolerance}
+    };
+  })()`;
+}
+
 /** Scan logcat for a native abort / process death of any watched plugin-service package. */
 async function detectServiceCrash(serial, packages) {
   if (!packages.length) return null;
@@ -318,6 +544,92 @@ export async function runUapmdLoadProject(serial, c) {
   console.log(`${v.ok ? 'PASS' : 'FAIL'} uapmd-load-project — loaded ${v.loadedCount}/${expected.length}` +
     (v.ok ? '' : formatProjectLoadFailure(v)));
   return [{ test: 'uapmd-load-project', expectedCount: expected.length, ...v }];
+}
+
+/**
+ * Regression for UAPMD opening the wrong AAP plugin GUI when two AAP plugin services
+ * are live. It creates Dexed and BYOD on separate tracks, opens the requested target
+ * UI, then asserts the accepted remote SurfacePackage route belongs to that plugin.
+ *
+ * @param {string|undefined} serial
+ * @param {{ hostPackage?:string, pluginFormat?:string, dexedPlugin:string, byodPlugin:string,
+ *           targetPlugin:string, pluginPackages?:string[], stopPackages?:string[], settleMs?:number }} c
+ */
+export async function runUapmdAapUiRouting(serial, c) {
+  const surface = SURFACES.uapmd;
+  const hostPackage = c.hostPackage ?? 'dev.atsushieno.uapmd';
+  const format = c.pluginFormat ?? 'AAP';
+  const plugins = [c.dexedPlugin, c.byodPlugin];
+  const targetPlugin = c.targetPlugin ?? c.byodPlugin;
+  const settleMs = c.settleMs ?? 5000;
+
+  await stopApps(serial, c, hostPackage);
+  await launchHost(serial, surface, hostPackage);
+
+  const scan = await connectOnce(serial, surface, hostPackage, uapmdScanScript());
+  if (!scan.ok) {
+    console.log(`FAIL uapmd-aap-ui-routing — scan failed: ${scan.error}`);
+    return [{ test: 'uapmd-aap-ui-routing', ok: false, error: `scan failed: ${scan.error}` }];
+  }
+
+  const emptyProjectPath = await pushProjectToApp(serial, hostPackage, 'tests/cases/empty.uapmd');
+  await launchHost(serial, surface, hostPackage);
+  const reset = await connectOnce(serial, surface, hostPackage, uapmdLoadEmptyProjectScript(emptyProjectPath),
+    4, { acceptSemanticFailure: true });
+  if (!reset.ok || !unwrap(reset.data).ok) {
+    const error = reset.ok ? JSON.stringify(unwrap(reset.data)) : reset.error;
+    console.log(`FAIL uapmd-aap-ui-routing — reset failed: ${error}`);
+    return [{ test: 'uapmd-aap-ui-routing', ok: false, error: `reset failed: ${error}` }];
+  }
+
+  await adb(serial, ['logcat', '-c']).catch(() => {});
+  const r = await runJsJob(serial, surface, hostPackage,
+    uapmdCreateDexedByodAndShowTargetUiScript(format, plugins, targetPlugin),
+    { timeoutMs: 120_000, pollMs: 1000 });
+  await delay(settleMs);
+  const crash = await detectServiceCrash(serial, c.pluginPackages ?? []);
+  const logcat = await readLogcat(serial);
+
+  if (!r.ok || crash) {
+    const error = crash ? `plugin service crashed: ${crash}` : r.error;
+    console.log(`FAIL uapmd-aap-ui-routing — ${error}`);
+    return [{ test: 'uapmd-aap-ui-routing', ok: false, error }];
+  }
+
+  const result = unwrap(r.data);
+  const route = analyzeUiRoutingLog(logcat, targetPlugin);
+  const ok = result.ok && route.acceptedTarget && !route.acceptedNonTarget;
+  console.log(`${ok ? 'PASS' : 'FAIL'} uapmd-aap-ui-routing — ` +
+    `target:${targetPlugin} accepted:[${route.acceptedPlugins.join(',')}] ` +
+    `requested:[${route.requestedPlugins.join(',')}] instances:${JSON.stringify(result.instances)}`);
+  return [{ test: 'uapmd-aap-ui-routing', targetPlugin, ...result, ok, route,
+    error: ok ? undefined : formatUiRoutingFailure(result, route, targetPlugin) }];
+}
+
+function formatUiRoutingFailure(result, route, targetPlugin) {
+  if (!result.ok) return result.error ?? `script failed: ${JSON.stringify(result)}`;
+  if (!route.acceptedTarget)
+    return `no accepted surface package for target ${targetPlugin}; accepted:[${route.acceptedPlugins.join(',')}]`;
+  if (route.acceptedNonTarget)
+    return `accepted non-target surface package(s): [${route.acceptedNonTargetPlugins.join(',')}]`;
+  return `unexpected route state: ${JSON.stringify(route)}`;
+}
+
+function analyzeUiRoutingLog(logcat, targetPlugin) {
+  const acceptedPlugins = [];
+  const requestedPlugins = [];
+  for (const m of logcat.matchAll(/accepted surface package pluginId:([^ \n]+) instanceId:/g))
+    acceptedPlugins.push(m[1]);
+  for (const m of logcat.matchAll(/connect request pluginId:([^ \n]+) instanceId:/g))
+    requestedPlugins.push(m[1]);
+  const acceptedNonTargetPlugins = acceptedPlugins.filter((p) => p !== targetPlugin);
+  return {
+    acceptedPlugins,
+    requestedPlugins,
+    acceptedTarget: acceptedPlugins.includes(targetPlugin),
+    acceptedNonTarget: acceptedNonTargetPlugins.length > 0,
+    acceptedNonTargetPlugins
+  };
 }
 
 async function verifyUapmdLoadAfterIncompleteResult(serial, surface, hostPackage, expected, initial) {
@@ -555,6 +867,35 @@ function uapmdCreatePluginTrackScript(format, pluginId) {
     } catch (e) {
       return { ok: false, pluginId: ${JSON.stringify(pluginId)}, trackIndex: trackIndex, error: String(e) };
     }
+  })()`;
+}
+
+function uapmdCreateDexedByodAndShowTargetUiScript(format, plugins, targetPlugin) {
+  const pluginList = JSON.stringify(plugins);
+  return `(function(){
+    var plugins = ${pluginList};
+    var targetPlugin = ${JSON.stringify(targetPlugin)};
+    var created = [];
+    for (var i = 0; i < plugins.length; i++) {
+      var trackIndex = uapmd.sequencer.addTrack();
+      var instanceId = uapmd.instancing.create(${JSON.stringify(format)}, plugins[i], trackIndex);
+      created.push({ pluginId: plugins[i], trackIndex: trackIndex, instanceId: instanceId });
+    }
+    var target = null;
+    for (var j = 0; j < created.length; j++) {
+      if (created[j].pluginId === targetPlugin) {
+        target = created[j];
+        break;
+      }
+    }
+    if (!target)
+      return { ok: false, error: "target plugin was not created", instances: created };
+    try {
+      uapmd.instance(target.instanceId).showUI();
+    } catch (e) {
+      return { ok: false, error: String(e), instances: created, target: target };
+    }
+    return { ok: true, instances: created, target: target };
   })()`;
 }
 
@@ -997,6 +1338,15 @@ async function stopApps(serial, c, hostPackage) {
 
 async function forceStopPackage(serial, pkg) {
   await adb(serial, ['shell', 'am', 'force-stop', pkg]);
+}
+
+async function readLogcat(serial) {
+  try {
+    const { stdout } = await adb(serial, ['logcat', '-d']);
+    return stdout;
+  } catch {
+    return '';
+  }
 }
 
 async function automationTargetDetails(serial, hostPackage) {
