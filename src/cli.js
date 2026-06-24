@@ -12,7 +12,7 @@ import { loadCatalog } from './catalog.js';
 import { acquire } from './acquire.js';
 import { installAll } from './install.js';
 import { acquireDevice } from './device/index.js';
-import { runByodPresetOutput, runConnectivity, runInspect, runPreset, runUapmdAapUiRouting, runUapmdProject, runUapmdLoadProject } from './run.js';
+import { runByodPresetOutput, runConnectivity, runInspect, runPreset, runUapmdAapUiRouting, runUapmdByodPresetValues, runUapmdProject, runUapmdLoadProject } from './run.js';
 import { paths, repoRoot } from './paths.js';
 import { defaultSuiteName, listSuites, loadSuite } from './suite.js';
 
@@ -168,6 +168,12 @@ async function runCase(serial, c) {
       const results = await runUapmdProject(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`uapmd-project: ${results.length - failed.length}/${results.length} passed`);
+      return caseResult(failed);
+    }
+    case 'uapmd-byod-preset-values': {
+      const results = await runUapmdByodPresetValues(serial, c);
+      const failed = results.filter((r) => !r.ok);
+      console.log(`uapmd-byod-preset-values: ${results.length - failed.length}/${results.length} passed`);
       return caseResult(failed);
     }
     case 'uapmd-load-project': {

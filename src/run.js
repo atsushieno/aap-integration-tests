@@ -496,6 +496,115 @@ export async function runUapmdProject(serial, c) {
   return [{ test: 'uapmd-project', created, ...v }];
 }
 
+function uapmdByodCreateScript(format, pluginId) {
+  return `(function(){
+    try {
+      var track = uapmd.sequencer.addTrack();
+      var id = __remidy_instance_create(${JSON.stringify(format)}, ${JSON.stringify(pluginId)}, track);
+      // Preset VALUES propagate host<-plugin only through the realtime process() output path, so
+      // the audio engine must be running. uapmdScanScript() disables it; re-enable it here.
+      __remidy_set_audio_engine_enabled(true);
+      return { ok: id >= 0, instanceId: id, trackIndex: track,
+               audioEnabled: __remidy_is_audio_engine_enabled() };
+    } catch (e) { return { ok: false, error: String(e) }; }
+  })()`;
+}
+
+function uapmdLoadPresetScript(instanceId, presetIndex) {
+  return `(function(){
+    var ok = __remidy_instance_load_preset(${instanceId}, ${presetIndex});
+    return { ok: !!ok, loaded: ${presetIndex} };
+  })()`;
+}
+
+function uapmdReadPresetValuesScript(instanceId, expected, tolerance) {
+  return `(function(){
+    var exp = ${JSON.stringify(expected)};
+    var tol = ${tolerance};
+    var detail = {}, mismatches = [];
+    for (var k in exp) {
+      var idx = parseInt(k, 10);
+      var got = __remidy_instance_get_parameter_value(${instanceId}, idx);
+      var ok = Math.abs(got - exp[k]) <= tol;
+      detail[k] = { got: got, exp: exp[k], ok: ok };
+      if (!ok) mismatches.push(k);
+    }
+    return { ok: mismatches.length === 0, expectedCount: Object.keys(exp).length,
+             mismatches: mismatches, detail: detail };
+  })()`;
+}
+
+/**
+ * uapmd BYOD preset value regression: instantiate BYOD AAP, select a preset, and verify the
+ * realtime parameter-value path propagates the EXPECTED per-parameter values into uapmd
+ * (oracle values captured from aaphostsample built from current aap-core). Guards against
+ * suspending process() for a metadata rescan, which silently drops preset value updates.
+ *
+ * @param {string|undefined} serial
+ * @param {{ hostPackage?:string, pluginFormat?:string, plugin?:string, pluginPackages?:string[],
+ *           stopPackages?:string[], presetIndex?:number, presetName?:string,
+ *           parameterTolerance?:number, settleAfterPresetMs?:number,
+ *           expectedValues:Record<string,number> }} c
+ */
+export async function runUapmdByodPresetValues(serial, c) {
+  const surface = SURFACES.uapmd;
+  const hostPackage = c.hostPackage ?? 'dev.atsushieno.uapmd';
+  const format = c.pluginFormat ?? 'AAP';
+  const plugin = c.plugin ?? 'juceaap:44717530';
+  const presetIndex = c.presetIndex ?? 9;
+  const tolerance = c.parameterTolerance ?? 1e-4;
+  const settleMs = c.settleAfterPresetMs ?? 4000;
+  const expected = c.expectedValues ?? {};
+  const test = 'uapmd-byod-preset-values';
+
+  await stopApps(serial, c, hostPackage);
+  await launchHost(serial, surface, hostPackage);
+
+  const scan = await connectOnce(serial, surface, hostPackage, uapmdScanScript());
+  if (!scan.ok) {
+    console.log(`FAIL ${test} — scan failed: ${scan.error}`);
+    return [{ test, ok: false, error: `scan failed: ${scan.error}` }];
+  }
+
+  const create = await connectOnce(serial, surface, hostPackage,
+    uapmdByodCreateScript(format, plugin), 4, { acceptSemanticFailure: true });
+  if (!create.ok) {
+    console.log(`FAIL ${test} — create failed: ${create.error}`);
+    return [{ test, ok: false, error: `create failed: ${create.error}` }];
+  }
+  const info = unwrap(create.data);
+  if (!info.ok || info.instanceId < 0) {
+    console.log(`FAIL ${test} — create failed: ${info.error ?? JSON.stringify(info)}`);
+    return [{ test, ok: false, error: `create failed: ${info.error ?? JSON.stringify(info)}` }];
+  }
+  const id = info.instanceId;
+
+  const load = await connectOnce(serial, surface, hostPackage,
+    uapmdLoadPresetScript(id, presetIndex), 4, { acceptSemanticFailure: true });
+  if (!load.ok) {
+    console.log(`FAIL ${test} — load preset ${presetIndex} failed: ${load.error}`);
+    return [{ test, ok: false, error: `load preset failed: ${load.error}` }];
+  }
+
+  // The plugin reports its new preset values over the realtime process() output path; give it a
+  // few audio cycles to propagate before reading back.
+  await delay(settleMs);
+
+  const read = await connectOnce(serial, surface, hostPackage,
+    uapmdReadPresetValuesScript(id, expected, tolerance), 4, { acceptSemanticFailure: true });
+  if (!read.ok) {
+    console.log(`FAIL ${test} — read values failed: ${read.error}`);
+    return [{ test, ok: false, error: `read values failed: ${read.error}` }];
+  }
+  const v = unwrap(read.data);
+  const ok = !!v.ok;
+  const matched = (v.expectedCount ?? 0) - (v.mismatches?.length ?? 0);
+  console.log(`${ok ? 'PASS' : 'FAIL'} ${test} — preset ${presetIndex}` +
+    `${c.presetName ? ` (${c.presetName})` : ''}: ${matched}/${v.expectedCount} params match` +
+    (ok ? '' : ` mismatches:[${(v.mismatches ?? []).join(',')}]`));
+  return [{ test, ok, presetIndex, ...v }];
+}
+
 /**
  * uapmd load-project test: push a .uapmd/.uapmdz project to the device, load it in uapmd-app,
  * and verify every plugin the project references actually instantiated. A loaded plugin node has a

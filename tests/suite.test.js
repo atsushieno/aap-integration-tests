@@ -14,6 +14,7 @@ test('ci suite captures the console-run integration matrix', () => {
     { case: 'wavetable-preset', catalog: 'wavetable-ci' },
     { case: 'byod-preset-output', catalog: 'byod-ci' },
     { case: 'uapmd-aap-ui-routing-byod-dexed', catalog: 'uapmd-byod-dexed-ci' },
+    { case: 'uapmd-byod-preset-values', catalog: 'uapmd-byod-dexed-ci' },
     { case: 'uapmd-project-mda', catalog: 'uapmd-ci' },
     { case: 'project4-load', catalog: 'project4-ci' },
   ]);
