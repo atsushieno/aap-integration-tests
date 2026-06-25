@@ -10,6 +10,7 @@ const suites = {
     { case: 'uapmd-byod-preset-values', catalog: 'uapmd-byod-dexed-ci' },
     { case: 'uapmd-project-mda', catalog: 'uapmd-ci' },
     { case: 'project4-load', catalog: 'project4-ci' },
+    { case: 'supported-plugins-smoke', catalog: 'supported-plugins-ci' },
   ],
 };
 

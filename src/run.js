@@ -424,6 +424,61 @@ export async function runInspect(serial, c) {
 }
 
 /**
+ * Preview plugin smoke: for each target plugin, launch a fresh aaphostsample, retrieve the
+ * parameter list, retrieve presets when exposed, activate/process with MIDI note messages,
+ * show/hide GUI, then force-stop the host. No parameter/preset value comparison.
+ *
+ * @param {string|undefined} serial
+ * @param {{ hostPackage:string, plugins:string[], pluginPackages?:string[], stopPackages?:string[],
+ *           frameCount?:number, sampleRate?:number, blocks?:number, settleMs?:number,
+ *           guiSettleMs?:number }} c
+ * @returns {Promise<object[]>} per-plugin result
+ */
+export async function runPluginSmoke(serial, c) {
+  const frameCount = c.frameCount ?? 1024;
+  const sampleRate = c.sampleRate ?? 48000;
+  const blocks = c.blocks ?? 10;
+  const settleMs = c.settleMs ?? 3000;
+  const guiSettleMs = c.guiSettleMs ?? 500;
+  const hostPackage = c.hostPackage ?? 'org.androidaudioplugin.aaphostsample';
+  const watch = c.pluginPackages ?? [];
+
+  const results = [];
+  for (const plugin of c.plugins) {
+    await stopApps(serial, c, hostPackage);
+    await launchHost(serial, SURFACES.aap, hostPackage);
+    await adb(serial, ['logcat', '-c']).catch(() => {});
+
+    try {
+      const r = await connectOnce(serial, SURFACES.aap, hostPackage,
+        pluginSmokeScript(plugin, frameCount, sampleRate, blocks, guiSettleMs));
+      await delay(settleMs);
+      const crash = await detectServiceCrash(serial, watch);
+
+      if (!r.ok || crash) {
+        const error = crash ? `plugin service crashed: ${crash}` : r.error;
+        results.push({ plugin, ok: false, error });
+        console.log(`FAIL plugin-smoke ${plugin} — ${error}`);
+        continue;
+      }
+
+      const v = unwrap(r.data);
+      results.push({ plugin, ...v });
+      console.log(`PASS plugin-smoke ${plugin} — params:${v.parameterCount} presets:${v.presetCount} ` +
+        `midiBlocks:${v.midi.blocks} gui:${v.gui.created}/${v.gui.shown}/${v.gui.hidden}`);
+    } finally {
+      try {
+        await forceStopPackage(serial, hostPackage);
+        console.log(`force-stop host ${hostPackage}`);
+      } catch (e) {
+        console.warn(`force-stop host warning for ${hostPackage}: ${String(e.message ?? e).split('\n')[0]}`);
+      }
+    }
+  }
+  return results;
+}
+
+/**
  * uapmd-based test (drives uapmd-app's automation surface): create a new (empty) project,
  * add a track per plugin and instantiate it, save the project, clear, reload, and verify the
  * tracks came back. Exercises the uapmd sequencer/project stack on top of AAP.
@@ -1138,6 +1193,78 @@ function inspectScript(pluginId, frameCount, sampleRate) {
   })()`;
 }
 
+/**
+ * JS evaluated on-device: create -> parameter/preset list -> prepare/activate ->
+ * add MIDI note UMPs while processing -> GUI create/show/hide/destroy -> deactivate/destroy.
+ *
+ * The current stable JS facade must expose addEventUmpInput and GUI methods for this to pass.
+ * Keeping the checks explicit makes an outdated aaphostsample fail with a useful prerequisite
+ * message instead of silently skipping the requested operations.
+ */
+function pluginSmokeScript(pluginId, frameCount, sampleRate, blocks, guiSettleMs) {
+  const pid = JSON.stringify(pluginId);
+  return `(function(){
+    function requireFunction(obj, name) {
+      if (typeof obj[name] !== 'function')
+        throw new Error('AAP JS controller does not expose ' + name + '()');
+      return obj[name].bind(obj);
+    }
+    function firstFunction(obj, names) {
+      for (var i = 0; i < names.length; i++)
+        if (typeof obj[names[i]] === 'function')
+          return { name: names[i], fn: obj[names[i]].bind(obj) };
+      throw new Error('AAP JS controller does not expose any of: ' + names.join(', '));
+    }
+    var inst = aap.instancing.create(${pid});
+    var parameters = inst.getParameters();
+    var parameterCount = inst.getParameterCount();
+    var presetCount = inst.getPresetCount();
+    var presets = [];
+    for (var i = 0; i < presetCount; i++)
+      presets.push({ index: i, name: inst.getPresetName(i) });
+
+    var addEventUmpInput = requireFunction(inst, 'addEventUmpInput');
+    inst.prepare(${frameCount}, ${sampleRate}).activate();
+    var noteOn = 0x20903c64;   // MIDI 1.0 UMP: note on, ch 0, note 60, velocity 100.
+    var noteOff = 0x20803c00;  // MIDI 1.0 UMP: note off, ch 0, note 60, velocity 0.
+    for (var b = 0; b < ${blocks}; b++) {
+      if (b === 0) addEventUmpInput([noteOn]);
+      if (b === Math.floor(${blocks} / 2)) addEventUmpInput([noteOff]);
+      inst.fillAudioInputs(b, 0.05);
+      inst.process(${frameCount});
+    }
+
+    var createGui = firstFunction(inst, ['createGui', 'createGUI', 'createUI', 'createUi']);
+    var showGui = firstFunction(inst, ['showGui', 'showGUI', 'showUI', 'showUi']);
+    var hideGui = firstFunction(inst, ['hideGui', 'hideGUI', 'hideUI', 'hideUi']);
+    var destroyGui = firstFunction(inst, ['destroyGui', 'destroyGUI', 'destroyUI', 'destroyUi']);
+    var guiInstanceId = createGui.fn();
+    showGui.fn(guiInstanceId);
+    inst.sleepMs(${guiSettleMs});
+    hideGui.fn(guiInstanceId);
+    destroyGui.fn(guiInstanceId);
+
+    inst.deactivate();
+    inst.destroy();
+    return {
+      ok: true,
+      pluginId: ${pid},
+      parameterCount: parameterCount,
+      parameters: parameters,
+      presetCount: presetCount,
+      presets: presets,
+      midi: { noteOn: noteOn, noteOff: noteOff, blocks: ${blocks} },
+      gui: {
+        created: createGui.name,
+        shown: showGui.name,
+        hidden: hideGui.name,
+        destroyed: destroyGui.name,
+        instanceId: guiInstanceId
+      }
+    };
+  })()`;
+}
+
 /** Parse a result payload that may be JSON or a JSON-encoded JSON string (transport double-encodes). */
 function unwrap(data) {
   let v = JSON.parse(data);
@@ -1447,6 +1574,24 @@ async function stopApps(serial, c, hostPackage) {
 
 async function forceStopPackage(serial, pkg) {
   await adb(serial, ['shell', 'am', 'force-stop', pkg]);
+}
+
+/**
+ * Force-stop every host app before each case. A *live* host with an active audio engine destabilizes
+ * any concurrent audio test (conflicting audio processing), so it is not enough to stop only the
+ * case's own host once: every host the suite can drive must be down at the start of every case.
+ * @param {string|undefined} serial
+ * @param {string[]} hosts
+ */
+export async function stopHostApps(serial, hosts) {
+  for (const pkg of unique((hosts ?? []).filter((p) => typeof p === 'string' && p.length > 0))) {
+    try {
+      await forceStopPackage(serial, pkg);
+      console.log(`force-stop host ${pkg}`);
+    } catch (e) {
+      console.warn(`force-stop host warning for ${pkg}: ${String(e.message ?? e).split('\n')[0]}`);
+    }
+  }
 }
 
 async function readLogcat(serial) {

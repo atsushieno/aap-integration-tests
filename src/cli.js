@@ -12,7 +12,12 @@ import { loadCatalog } from './catalog.js';
 import { acquire } from './acquire.js';
 import { installAll } from './install.js';
 import { acquireDevice } from './device/index.js';
-import { runByodPresetOutput, runConnectivity, runInspect, runPreset, runUapmdAapUiRouting, runUapmdByodPresetValues, runUapmdProject, runUapmdLoadProject } from './run.js';
+import { runByodPresetOutput, runConnectivity, runInspect, runPluginSmoke, runPreset, runUapmdAapUiRouting, runUapmdByodPresetValues, runUapmdProject, runUapmdLoadProject, stopHostApps } from './run.js';
+
+// All AAP audio host apps the harness may have launched. Any live host with an active audio engine
+// destabilizes other audio tests, so all are force-stopped before each case and after the run,
+// regardless of which case is selected.
+const KNOWN_AAP_HOST_APPS = ['dev.atsushieno.uapmd', 'org.androidaudioplugin.aaphostsample'];
 import { paths, repoRoot } from './paths.js';
 import { defaultSuiteName, listSuites, loadSuite } from './suite.js';
 
@@ -84,8 +89,15 @@ async function main() {
       return;
     }
     const results = [];
+    // Every AAP audio host that could be live, independent of which case is running. A live host
+    // with an active audio engine destabilizes any other audio test, so all of them are
+    // force-stopped before EVERY case (not just once, and not just the case's own host); the case
+    // then launches only its target host. Includes hosts not referenced by the current plan
+    // (e.g. aaphostsample left running from a prior single-case run).
+    const allHosts = unique([...KNOWN_AAP_HOST_APPS, ...plan.runs.map((r) => r.testCase.hostPackage)].filter(Boolean));
     for (const item of plan.runs) {
       console.log(`\n=== ${item.name} (catalog: ${item.catalogName ?? 'skipped'}) ===`);
+      await stopHostApps(device.serial, allHosts);
       try {
         const result = await runCase(device.serial, item.testCase);
         results.push({ name: item.name, ...result });
@@ -97,6 +109,12 @@ async function main() {
     }
     summarize(results);
   } finally {
+    // Leave no host running with an active audio engine after the run.
+    try {
+      const hosts = unique([...KNOWN_AAP_HOST_APPS, ...(plan?.runs ?? []).map((r) => r.testCase?.hostPackage)].filter(Boolean));
+      if (hosts.length)
+        await stopHostApps(device.serial, hosts);
+    } catch { /* best-effort cleanup */ }
     await device.dispose();
   }
 }
@@ -156,6 +174,12 @@ async function runCase(serial, c) {
       const results = await runPreset(serial, c);
       const failed = results.filter((r) => !r.ok);
       console.log(`preset: ${results.length - failed.length}/${results.length} passed`);
+      return caseResult(failed);
+    }
+    case 'plugin-smoke': {
+      const results = await runPluginSmoke(serial, c);
+      const failed = results.filter((r) => !r.ok);
+      console.log(`plugin-smoke: ${results.length - failed.length}/${results.length} passed`);
       return caseResult(failed);
     }
     case 'byod-preset-output': {
