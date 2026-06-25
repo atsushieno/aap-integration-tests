@@ -1275,8 +1275,9 @@ function unwrap(data) {
 /**
  * Run one connectivity script, with retries for the first-bind race: the initial create() triggers
  * a plugin-service bind that can outlast `am broadcast`'s result window, yielding an empty result
- * even though the bind completes in the background. A retry (the engine serializes, so it runs once
- * the bind is done) then succeeds. A definitive `ERROR:` is NOT retried.
+ * even though the bind completes in the background. The host activity can also expose the JS
+ * receiver before its native AAP client has attached. A retry (after readiness polling) then
+ * succeeds. Other definitive `ERROR:` responses are not retried.
  *
  * By default, pass requires BOTH transport result=0 AND the script returning our {ok:true}
  * sentinel; the native facade reports failures as a returned "ERROR: ..." string with
@@ -1316,6 +1317,21 @@ async function connectOnce(serial, surface, hostPackage, code, attempts = 4, opt
         error: `automation runtime is not attached after ${attempts} attempt(s). ` +
           `The ${hostPackage} activity is not alive when JS automation is sent. ` +
           `Last receiver response: result=${resultCode}, data=${data || '(empty)'}`,
+      };
+    }
+    if (automationClientNotAttached(data)) {
+      lastError = `host JS receiver is alive, but the native AAP client is not attached yet ` +
+        `(broadcast result=${resultCode}: ${data || '(no data)'}).`;
+      if (i < attempts) {
+        console.warn(`${lastError} Relaunching ${hostPackage} before retry ${i + 1}/${attempts}.`);
+        await forceStopPackage(serial, hostPackage).catch(() => {});
+        await launchHost(serial, surface, hostPackage);
+        continue;
+      }
+      const details = await automationTargetDetails(serial, hostPackage);
+      return {
+        ok: false,
+        error: `${lastError} Last retry exhausted${details ? ` (${details})` : ''}`,
       };
     }
     if (data && data.startsWith('ERROR')) return { ok: false, error: data }; // definitive
@@ -1460,6 +1476,10 @@ function parseJobResult(data) {
 
 function automationNativeBridgeMissing(data) {
   return /UnsatisfiedLinkError: No implementation found for .*MainActivity\.native/i.test(data ?? '');
+}
+
+function automationClientNotAttached(data) {
+  return /No AAP client is attached\. Call AapAutomationRuntime\.attachNativeClient\(\) first/i.test(data ?? '');
 }
 
 /** Parse `Broadcast completed: result=<code>, data="<data>"`. */

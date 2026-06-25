@@ -60,12 +60,6 @@
       "files": { "Odin2-debug.apk": "aap-juce-odin2.apk" }
     },
     {
-      "repo": "atsushieno/aap-juce-surge",
-      "commit": "60f70b178676e19d61d69572cb8109e776ae62e8",
-      "artifacts": ["dist"],
-      "files": { "-debug.apk": "aap-juce-surge.apk" }
-    },
-    {
       "repo": "atsushieno/aap-juce-vaporizer2",
       "commit": "bd530478229e29e38ad3e882574760d3b1f46bb5",
       "artifacts": ["dist"],

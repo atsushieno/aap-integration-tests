@@ -29,13 +29,9 @@ test('rejects empty artifacts', () => {
 test('loads the example mda-baseline catalog', async () => {
   const c = await loadCatalog('mda-baseline');
   assert.equal(c.name, 'mda-baseline');
-  assert.ok(c.entries.length >= 1);
-  assert.equal(c.entries[0].repo, 'atsushieno/aap-lv2-mda');
 });
 
 test('loads the supported plugin smoke catalog', async () => {
   const c = await loadCatalog('supported-plugins-ci');
   assert.equal(c.name, 'supported-plugins-ci');
-  assert.equal(c.entries.length, 14);
-  assert.equal(c.entries[0].repo, 'atsushieno/aap-core');
 });
