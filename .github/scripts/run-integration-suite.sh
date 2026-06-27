@@ -15,6 +15,10 @@ if [[ -n "${UNINSTALL_PACKAGES:-}" ]]; then
   done
 fi
 
+# Clear uapmd app data so autosaved project state from a previous run doesn't
+# bleed into tests that assume a fresh uapmd session (e.g. uapmd-byod-preset-values).
+adb shell pm clear dev.atsushieno.uapmd || true
+
 npm test -- --device auto
 status=$?
 
