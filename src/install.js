@@ -1,10 +1,5 @@
-// adb install of staged APKs, skipping when the device already has a matching
-// versionCode (ARCHITECTURE.md §6, §7). Package name + versionCode are derived
-// from the APK (aapt/badging) — never authored by hand.
-//
-// DRAFT: shells out to `adb` / `aapt`; assumes both are on PATH.
-
-import { readdir } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -13,12 +8,17 @@ import { buildTool } from './sdk.js';
 
 const run = promisify(execFile);
 
+// Checksums are stored on the device so they survive inside the cached AVD userdata image.
+const CHECKSUM_DIR = '/data/local/tmp/aap-checksums';
+
 /**
  * Install every staged APK (.work/downloaded and .work/local override).
+ * Skips a package only when the staged APK's SHA-256 matches the checksum
+ * stored on the device after the previous install. This is the only reliable
+ * signal: versionCode is manually bumped and almost never changes in debug builds.
+ *
  * @param {string} [deviceSerial]
  * @param {{reinstall?: boolean}} [opts]
- *   reinstall=false (default): skip a package that is already installed.
- *   reinstall=true:            force `install -r` for every package.
  */
 export async function installAll(deviceSerial, opts = {}) {
   const adb = (args) =>
@@ -26,12 +26,19 @@ export async function installAll(deviceSerial, opts = {}) {
 
   for (const apk of await stagedApks()) {
     const { pkg } = await badging(apk);
-    if (!opts.reinstall && (await isInstalled(adb, pkg))) {
-      console.log(`skip ${pkg} (already installed; pass --reinstall to force)`);
-      continue;
+    if (!opts.reinstall) {
+      const staged = await apkChecksum(apk);
+      const installed = await deviceChecksum(adb, pkg);
+      if (installed === staged) {
+        console.log(`skip ${pkg} (installed APK matches staged sha256)`);
+        continue;
+      }
+      console.log(`${installed ? 'reinstall' : 'install'} ${pkg} <- ${path.basename(apk)}`);
+    } else {
+      console.log(`reinstall ${pkg} <- ${path.basename(apk)}`);
     }
-    console.log(`${opts.reinstall ? 'reinstall' : 'install'} ${pkg} <- ${path.basename(apk)}`);
     await installOne(adb, pkg, apk);
+    await storeChecksum(adb, pkg, await apkChecksum(apk));
   }
 }
 
@@ -68,35 +75,44 @@ async function stagedApks() {
   return [...seen.values()];
 }
 
-/** Parse package + versionCode via `aapt dump badging` (falls back to aapt2). */
+/** Parse package name via `aapt dump badging` (falls back to aapt2). */
 async function badging(apkPath) {
   const stdout = await dumpBadging(apkPath);
   const pkg = /package: name='([^']+)'/.exec(stdout)?.[1];
-  const versionCode = /versionCode='([^']+)'/.exec(stdout)?.[1];
   if (!pkg) throw new Error(`Could not read package name from ${apkPath}.`);
-  return { pkg, versionCode: versionCode ?? null };
+  return { pkg };
 }
 
 async function dumpBadging(apkPath) {
-  // Prefer SDK build-tools (env may not put them on PATH), then fall back to PATH.
   for (const tool of [buildTool('aapt2'), buildTool('aapt'), 'aapt2', 'aapt']) {
     try {
       const { stdout } = await run(tool, ['dump', 'badging', apkPath]);
       return stdout;
     } catch (e) {
-      if (e.code === 'ENOENT') continue; // tool not found here; try the next
+      if (e.code === 'ENOENT') continue;
       throw e;
     }
   }
   throw new Error('Neither `aapt2` nor `aapt` found (SDK build-tools or PATH); needed to read APK metadata.');
 }
 
-/** Whether `pkg` is installed on the device (exact package-name match). */
-async function isInstalled(adb, pkg) {
+async function apkChecksum(apkPath) {
+  const data = await readFile(apkPath);
+  return createHash('sha256').update(data).digest('hex');
+}
+
+/** Read the checksum stored on the device for `pkg`, or null if absent. */
+async function deviceChecksum(adb, pkg) {
   try {
-    const { stdout } = await adb(['shell', 'pm', 'list', 'packages', pkg]);
-    return stdout.split('\n').some((l) => l.trim() === `package:${pkg}`);
+    const { stdout } = await adb(['shell', `cat ${CHECKSUM_DIR}/${pkg} 2>/dev/null`]);
+    return stdout.trim() || null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** Persist the checksum on the device so it survives in the cached AVD userdata. */
+async function storeChecksum(adb, pkg, checksum) {
+  // checksum is a hex string — no shell escaping concerns.
+  await adb(['shell', `mkdir -p ${CHECKSUM_DIR} && echo ${checksum} > ${CHECKSUM_DIR}/${pkg}`]);
 }
