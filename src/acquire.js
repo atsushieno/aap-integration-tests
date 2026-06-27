@@ -67,6 +67,7 @@ async function resolveEntry(entry, token, label) {
     const validation = validateCacheFiles(entry, files);
     if (validation.ok) {
       console.log(`    cache hit: ${cacheDir} (${files.join(', ')})`);
+      inspectApks(cacheDir, files, entry, label);
       return { dir: cacheDir, source: 'cache' };
     }
     if (files.length > 0) {
@@ -76,8 +77,57 @@ async function resolveEntry(entry, token, label) {
   }
   console.log(`    cache miss: ${cacheDir}`);
   await downloadFromCommit(entry, cacheDir, token, label);
+  const freshFiles = await readdir(cacheDir);
+  inspectApks(cacheDir, freshFiles, entry, label);
   return { dir: cacheDir, source: 'download' };
 }
+
+/**
+ * The methods that aap-api.js must expose for the smoke-test JS script to run.
+ * If any are missing the APK was built against an old or accidentally-reverted aap-core
+ * (see: the 2f629000 revert that silently dropped addEventUmpInput from aap-api.js).
+ */
+const REQUIRED_AAP_API_SYMBOLS = ['addEventUmpInput', 'createGui', 'showGui', 'hideGui', 'destroyGui'];
+
+/**
+ * For every APK in `files`, open it as a ZIP and, if it is a known host APK that contains
+ * `assets/aap-api.js`, verify the required JS API symbols are present.  Plugin APKs also
+ * bundle aap-api.js (they depend on androidaudioplugin-js-controller), but the JS automation
+ * runtime always runs in the HOST process, so only the host APK's copy is ever loaded.
+ * Throws with an actionable message so the failure is caught at acquire-time rather than
+ * at test-run time with a cryptic "does not expose X()" message.
+ */
+function inspectApks(dir, files, entry, label) {
+  for (const file of files) {
+    if (!file.endsWith('.apk')) continue;
+    if (!HOST_APK_NAMES.has(file)) continue; // skip plugin APKs — their bundled aap-api.js is never loaded by the test runner
+    const apkPath = path.join(dir, file);
+    let zip;
+    try {
+      zip = new AdmZip(apkPath);
+    } catch {
+      continue; // not a valid zip; skip silently (install will catch it later)
+    }
+    const apiJsEntry = zip.getEntry('assets/aap-api.js');
+    if (!apiJsEntry) continue;
+    const source = apiJsEntry.getData().toString('utf8');
+    const missing = REQUIRED_AAP_API_SYMBOLS.filter((sym) => !source.includes(sym));
+    if (missing.length === 0) {
+      console.log(`    inspect ${file}: assets/aap-api.js OK (${REQUIRED_AAP_API_SYMBOLS.join(', ')})`);
+    } else {
+      throw new Error(
+        `${label ? `${label}: ` : ''}${file} (${entry.repo}@${shortSha(entry.commit)}) ` +
+        `contains assets/aap-api.js but is missing required JS API method(s): ${missing.join(', ')}. ` +
+        `The APK was likely built against an old or accidentally-reverted aap-core. ` +
+        `Bump the aap-core pin to a commit where these methods exist in ` +
+        `androidaudioplugin-js-controller/src/main/assets/aap-api.js.`
+      );
+    }
+  }
+}
+
+/** APK filenames that serve as the JS automation host (load aap-api.js at runtime). */
+const HOST_APK_NAMES = new Set(['aaphostsample.apk']);
 
 /**
  * Download the named artifacts of the successful Actions run for `entry.commit`,

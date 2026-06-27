@@ -4,7 +4,7 @@
   "entries": [
     {
       "repo": "atsushieno/aap-core",
-      "commit": "8fcf4fb8266212c5748c08c485ed0819184e0a8b",
+      "commit": "68a0278cadd693b6f0e4e92dcbabbcefca7a39df",
       "artifacts": ["aap-core-apps-and-libs"],
       "files": { "samples/aaphostsample/build/outputs/apk/debug/aaphostsample-debug.apk": "aaphostsample.apk" }
     },
