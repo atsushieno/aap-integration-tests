@@ -20,6 +20,21 @@ name: integration-tests
 
 on:
   workflow_dispatch:
+    inputs:
+      uninstall_packages:
+        description: >
+          Space-separated Android package names to uninstall from the cached AVD
+          before the test run (e.g. org.androidaudioplugin.aaphostsample).
+          Use this when a host or plugin APK is stale in the AVD cache.
+        required: false
+        default: ''
+      avd_cache_suffix:
+        description: >
+          Optional suffix appended to the AVD cache key to force a completely
+          fresh emulator (busts the cached userdata image). Use when the AVD
+          itself is corrupt or you need a clean slate. Leave blank for normal runs.
+        required: false
+        default: ''
   schedule:
     - cron: '0 6 * * *'   # nightly
   push:
@@ -66,7 +81,7 @@ jobs:
           path: |
             ~/.android/avd/*
             ~/.android/adb*
-          key: avd-api35-google_apis-x86_64
+          key: avd-api35-google_apis-x86_64${{ inputs.avd_cache_suffix && format('-{0}', inputs.avd_cache_suffix) || '' }}
 
       - name: Cache downloaded APK artifacts
         uses: actions/cache@v4
@@ -91,6 +106,8 @@ jobs:
         env:
           # acquire.js reads GITHUB_TOKEN; this PAT can read cross-repo artifacts.
           GITHUB_TOKEN: ${{ secrets.AAP_ARTIFACTS_PAT }}
+          # Space-separated packages to uninstall before the run (workflow_dispatch only).
+          UNINSTALL_PACKAGES: ${{ inputs.uninstall_packages || '' }}
 
       - name: Upload integration diagnostics
         if: always()
