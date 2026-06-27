@@ -4,37 +4,43 @@
   "entries": [
     {
       "repo": "atsushieno/aap-core",
-      "commit": "2f6290001e2de6008fac903d1df1faf46a3f02b7",
+      "commit": "68a0278cadd693b6f0e4e92dcbabbcefca7a39df",
       "artifacts": ["aap-core-apps-and-libs"],
       "files": { "samples/aaphostsample/build/outputs/apk/debug/aaphostsample-debug.apk": "aaphostsample.apk" }
     },
     {
       "repo": "atsushieno/aap-juce-byod",
-      "commit": "ab04eaef4f461afe34f6c8a7b9e96aacb6c42857",
+      "commit": "f8626a77be277cc72cfe05d0155135a5e425997a",
       "artifacts": ["dist"],
       "files": { "BYOD-debug.apk": "aap-juce-byod.apk" }
     },
     {
       "repo": "atsushieno/aap-juce-dexed",
-      "commit": "1189508eb52b33efd15d119b288b48150483f9e0",
+      "commit": "8b31ce6a93fd20c924a87b17ab9c5caf40c91044",
       "artifacts": ["dist"],
       "files": { "Dexed-debug.apk": "aap-juce-dexed.apk" }
     },
     {
+      "repo": "atsushieno/aap-lv2-mda",
+      "commit": "b8b782836e8d0944e636953e4090697bf459fe6c",
+      "artifacts": ["debug-apk"],
+      "files": { "apk/debug/app-debug.apk": "aap-lv2-mda.apk" }
+    },
+    {
       "repo": "atsushieno/aap-lv2-sfizz",
-      "commit": "6e8918eb5a8166a5ea1dd70a3145ed26a8058acb",
+      "commit": "8c1a96f064d3664edb8c49e26bbbc1a787c65404",
       "artifacts": ["debug-apk"],
       "files": { "apk/debug/app-debug.apk": "aap-lv2-sfizz.apk" }
     },
     {
       "repo": "atsushieno/aap-lv2-string-machine",
-      "commit": "7dcfb18f53b56c341672fc6736a9e66b4f7540e9",
+      "commit": "c42f14581e2afb878d32a5303404755a543ef324",
       "artifacts": ["debug-apk"],
       "files": { "apk/debug/app-debug.apk": "aap-lv2-string-machine.apk" }
     },
     {
       "repo": "atsushieno/aap-juce-adlplug-ae",
-      "commit": "f7fcaef28c0e64d19c8682654de958909148fc60",
+      "commit": "2ca75aa74d4c87cf33f77d92dad741dd5b8375af",
       "artifacts": ["dist"],
       "files": {
         "adlplug-ae-debug.apk": "aap-juce-adlplug-ae.apk",
@@ -43,43 +49,43 @@
     },
     {
       "repo": "atsushieno/aap-juce-audible-planets",
-      "commit": "3fb691743c8989c311bcf05017eadd7d909ceaaa",
+      "commit": "b384ee52c7ddd7c62a19dcc2aeaab9ec3a7764d4",
       "artifacts": ["dist"],
       "files": { "AudiblePlanets-debug.apk": "aap-juce-audible-planets.apk" }
     },
     {
       "repo": "atsushieno/aap-juce-ob-xf",
-      "commit": "8fb05c51ed49ac34239e8578ec72551fe4f3471e",
+      "commit": "e186d80dd7716bd8382ccce69d514d6d6b73facf",
       "artifacts": ["dist"],
       "files": { "OB-Xf-debug.apk": "aap-juce-ob-xf.apk" }
     },
     {
       "repo": "atsushieno/aap-juce-odin2",
-      "commit": "03d40f5961589a3d1c2b95a4a80756869000318c",
+      "commit": "2c20e575784c34b84486b3be9a310c7698717b34",
       "artifacts": ["dist"],
       "files": { "Odin2-debug.apk": "aap-juce-odin2.apk" }
     },
     {
       "repo": "atsushieno/aap-juce-vaporizer2",
-      "commit": "bd530478229e29e38ad3e882574760d3b1f46bb5",
+      "commit": "42891c712b84f48be623657cfce9ba3d8be93199",
       "artifacts": ["dist"],
       "files": { "Vaporizer2-debug.apk": "aap-juce-vaporizer2.apk" }
     },
     {
       "repo": "atsushieno/aap-juce-wavetable",
-      "commit": "2d3f6ce878b1906092ee9de23eef029ebcc1a1b1",
+      "commit": "016a993d4d1eeeb0344dc7d5432f331ffe7adfc5",
       "artifacts": ["dist"],
       "files": { "Wavetable-debug.apk": "aap-juce-wavetable.apk" }
     },
     {
       "repo": "atsushieno/aap-juce-frequalizer",
-      "commit": "98ddecc6f633967c96b64f51f776f20d058cb066",
+      "commit": "e1ca29684c254cacb5948fac56629ba1807abf52",
       "artifacts": ["dist"],
       "files": { "frequalizer-debug.apk": "aap-juce-frequalizer.apk" }
     },
     {
       "repo": "atsushieno/aap-juce-os251",
-      "commit": "e1a702aa63311d3c33e65ef2a91dc42d2e926be0",
+      "commit": "87e7a131b1fedbdd2fac92ebb9bdf83b2f8efb24",
       "artifacts": ["dist"],
       "files": { "OS-251-debug.apk": "aap-juce-os251.apk" }
     }

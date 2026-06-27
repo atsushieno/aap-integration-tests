@@ -7,6 +7,8 @@
   "plugins": [
     "juceaap:44717530",
     "juceaap:44657864",
+    "lv2:http://drobilla.net/plugins/mda/DX10",
+    "lv2:http://drobilla.net/plugins/mda/Overdrive",
     "lv2:http://sfztools.github.io/sfizz",
     "lv2:http://sfztools.github.io/sfizz-multi",
     "lv2:http://jpcima.sdf1.org/lv2/string-machine-chorus",
@@ -25,6 +27,7 @@
   "pluginPackages": [
     "org.androidaudioplugin.ports.juce.byod",
     "org.androidaudioplugin.ports.juce.dexed",
+    "org.androidaudioplugin.ports.lv2.mda_lv2",
     "org.androidaudioplugin.ports.lv2.sfizz",
     "org.androidaudioplugin.ports.lv2.string_machine",
     "org.androidaudioplugin.ports.juce.adlplug_ae",
